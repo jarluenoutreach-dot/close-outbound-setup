@@ -1,0 +1,6 @@
+fastapi==0.115.6
+uvicorn==0.34.0
+httpx==0.28.1
+python-dotenv==1.0.1
+phonenumbers==8.13.52
+tzdata==2024.2

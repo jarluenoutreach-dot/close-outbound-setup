@@ -1,0 +1,10 @@
+# Installed to /etc/caddy/Caddyfile by deploy/install.sh.
+# Caddy gets and renews a free Let's Encrypt certificate for this domain automatically.
+{{DOMAIN}} {
+	encode gzip
+	# Only the webhook and health endpoints exist; everything else 404s in the app.
+	reverse_proxy 127.0.0.1:{{PORT}}
+	log {
+		output file /var/log/caddy/close-outbound.log
+	}
+}

@@ -1,0 +1,17 @@
+# Secrets and runtime state — never commit
+.env
+.env.*
+!.env.example
+data/
+logs/
+STOP
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
