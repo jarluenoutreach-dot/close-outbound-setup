@@ -40,6 +40,7 @@ class Settings:
     # Sending
     send_window_start_hour: int = 8
     send_window_end_hour: int = 20
+    send_window_end_minute: int = 0
     min_seconds_between_sends: int = 15
     max_sends_per_hour: int = 60
     schedule_spacing_seconds: int = 15
@@ -121,6 +122,7 @@ def load_settings(env_file: Path = ENV_FILE) -> Settings:
         long_call_seconds=_int("LONG_CALL_SECONDS", 120),
         send_window_start_hour=_int("SEND_WINDOW_START_HOUR", 8),
         send_window_end_hour=_int("SEND_WINDOW_END_HOUR", 20),
+        send_window_end_minute=_int("SEND_WINDOW_END_MINUTE", 0),
         min_seconds_between_sends=_int("MIN_SECONDS_BETWEEN_SENDS", 15),
         max_sends_per_hour=_int("MAX_SENDS_PER_HOUR", 60),
         schedule_spacing_seconds=_int("SCHEDULE_SPACING_SECONDS", 15),

@@ -84,6 +84,11 @@ def test_rule8_no_phone():
     assert precheck(lead(phone=None), local_record=None).rule == "8"
 
 
+def test_rule9_unsendable_phone():
+    # Too few digits for a real US number — phonenumbers parses it but marks it invalid.
+    assert precheck(lead(phone="+1654964057"), local_record=None).rule == "9"
+
+
 # ---------------------------------------------------------- timezones
 def test_zones_from_area_code():
     assert [z.key for z in zones_for_phone("+12125550100")] == ["America/New_York"]
@@ -97,6 +102,13 @@ def test_send_window():
     assert in_send_window(datetime(2026, 11, 5, 13, 0, tzinfo=UTC), eastern)  # 8:00 ET
     assert not in_send_window(datetime(2026, 11, 5, 12, 59, tzinfo=UTC), eastern)
     assert not in_send_window(datetime(2026, 11, 6, 1, 0, tzinfo=UTC), eastern)  # 8:00pm ET
+
+
+def test_send_window_half_hour_end():
+    eastern = zones_for_phone("+12125550100")
+    assert in_send_window(datetime(2026, 11, 6, 1, 0, tzinfo=UTC), eastern, end_minute=30)  # 8:00pm ET
+    assert in_send_window(datetime(2026, 11, 6, 1, 29, tzinfo=UTC), eastern, end_minute=30)  # 8:29pm ET
+    assert not in_send_window(datetime(2026, 11, 6, 1, 30, tzinfo=UTC), eastern, end_minute=30)  # 8:30pm ET
 
 
 def test_next_send_time_central_for_east_local_for_west():
@@ -118,8 +130,7 @@ def test_pacific_lead_early_morning_gets_same_day_8am_local():
 # ----------------------------------------------------------- messages
 def test_messages():
     assert render(1, "Sam").startswith("Hey Sam! My name is Jarluen.")
-    assert render(2, None).startswith("Hey! This is Jarluen")
-    assert render(3, None).startswith("Hi! Jarluen here")
+    assert render(2, None).startswith("Hi! Jarluen here")
     assert clean_first_name("SAM SMITH") == "Sam"
     assert clean_first_name("+1 312 555 0100") is None
     assert clean_first_name("") is None

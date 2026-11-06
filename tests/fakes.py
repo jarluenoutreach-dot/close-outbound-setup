@@ -60,6 +60,12 @@ class FakeClose:
     async def view_lead_ids(self, view_id):
         return sorted(self.view)
 
+    async def recent_candidate_ids_fast(self, lookback_minutes=15, limit=50):
+        # The fake has no notion of Close's search-index lag or a separate
+        # fast path — it's a plain in-memory model, so this is equivalent to
+        # view_lead_ids for test purposes.
+        return sorted(self.view)
+
     async def find_lead_ids_by_phone(self, phone):
         return [lid for lid, lead in self.leads.items() if normalize_phone(phone) in lead_phones(lead)]
 

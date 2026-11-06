@@ -41,6 +41,7 @@ LEAD_COLUMNS = {
     "queued_at": "TEXT",
     "sent_at": "TEXT",
     "error_at": "TEXT",
+    "tried_versions": "TEXT",  # comma-separated template versions already attempted for this lead
 }
 
 SCHEMA = (

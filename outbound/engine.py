@@ -25,7 +25,7 @@ from .eligibility import (
     normalize_phone,
     precheck,
 )
-from .messages import VERSIONS, render
+from .messages import PRIMARY_VERSIONS, VERSIONS, clean_first_name, render
 from .telegram import Telegram
 from .timeutil import iso, parse_dt, utcnow
 from .timezones import CENTRAL, in_send_window, next_send_time, zone_label, zones_for_phone
@@ -275,8 +275,9 @@ class Engine:
     async def _route(self, lead_id: str, decision: Decision, source: str, version: int | None = None) -> None:
         zones = zones_for_phone(decision.phone, self.s.default_timezone)
         now = self.clock()
-        if in_send_window(now, zones, self.s.send_window_start_hour, self.s.send_window_end_hour):
-            version = version or self.rng.choice(VERSIONS)
+        if in_send_window(now, zones, self.s.send_window_start_hour, self.s.send_window_end_hour,
+                          self.s.send_window_end_minute):
+            version = version or self.rng.choice(PRIMARY_VERSIONS)
             self.db.upsert(
                 lead_id,
                 status="queued",
@@ -314,7 +315,7 @@ class Engine:
     async def _schedule(self, lead_id, decision: Decision, zones, source, version: int | None = None) -> None:
         now = self.clock()
         slot = self._pick_slot(next_send_time(now, zones, self.s.send_window_start_hour))
-        version = version or self.rng.choice(VERSIONS)
+        version = version or self.rng.choice(PRIMARY_VERSIONS)
         text = render(version, decision.first_name)
         phone = normalize_phone(decision.phone)
         sms_id = None
@@ -437,9 +438,10 @@ class Engine:
                 await self._skip(lead_id, decision, source or "queue", stage="pre-send")
                 return
 
-            version = rec.get("message_version") or self.rng.choice(VERSIONS)
+            version = rec.get("message_version") or self.rng.choice(PRIMARY_VERSIONS)
             zones = zones_for_phone(decision.phone, self.s.default_timezone)
-            if not in_send_window(now, zones, self.s.send_window_start_hour, self.s.send_window_end_hour):
+            if not in_send_window(now, zones, self.s.send_window_start_hour, self.s.send_window_end_hour,
+                                   self.s.send_window_end_minute):
                 log.info("Send window closed for %s while it was queued; scheduling for the morning instead", lead_id)
                 await self._schedule(lead_id, decision, zones, source, version)
                 return
@@ -499,10 +501,54 @@ class Engine:
         await self._sent_note(rec["lead_id"], rec.get("message_version"))
 
     # ------------------------------------------------------------------ errors
+    _CONTENT_FILTER_MARKER = "carrier guidelines"
+
+    async def _try_another_template(self, lead_id: str) -> bool:
+        """A send failed because of message *content* (a carrier spam filter),
+        not a bad/unsupported number — try one of the other template versions
+        before giving up permanently on this lead. Returns True if a retry
+        was actually sent (caller should not mark the lead as errored yet)."""
+        rec = self.db.get(lead_id)
+        if not rec or not rec.get("phone") or not rec.get("contact_id"):
+            return False
+        tried = {int(v) for v in (rec.get("tried_versions") or "").split(",") if v.strip()}
+        if rec.get("message_version"):
+            tried.add(int(rec["message_version"]))
+        remaining = [v for v in VERSIONS if v not in tried]
+        if not remaining:
+            return False
+        next_version = remaining[0]
+        lead = await self.close.get_lead(lead_id)
+        contact = next((c for c in (lead or {}).get("contacts", []) if c.get("id") == rec["contact_id"]), None)
+        first_name = clean_first_name((contact or {}).get("name"))
+        text = render(next_version, first_name)
+        now = self.clock()
+        try:
+            sms = await self.close.create_sms({
+                "lead_id": lead_id, "contact_id": rec["contact_id"], "local_phone": self.s.local_phone,
+                "remote_phone": rec["phone"], "text": text, "status": "outbox",
+            })
+        except CloseError as exc:
+            log.warning("Retry (other template) for %s failed outright: %s", lead_id, exc)
+            return False
+        tried.add(next_version)
+        self.db.upsert(
+            lead_id, status="sent", message_version=next_version, message_text=text,
+            sms_activity_id=sms.get("id"), sent_at=iso(now), verified_at=None, verify_attempts=0,
+            verify_after=iso(now + timedelta(seconds=self.s.error_check_delay_seconds)),
+            tried_versions=",".join(str(v) for v in sorted(tried)),
+        )
+        self._event("retry_other_template", lead_id, detail=f"v{next_version} sms={sms.get('id')}")
+        log.info("RETRY (other template) %s (%s) %s version %s sms=%s",
+                 rec.get("lead_name"), lead_id, rec["phone"], next_version, sms.get("id"))
+        return True
+
     async def _mark_error(self, lead_id: str, message: str, *, decision: Decision | None = None, zones=None,
                           version=None, text=None, source=None) -> None:
         rec = self.db.get(lead_id)
         if rec and rec["status"] == "error":
+            return
+        if self._CONTENT_FILTER_MARKER in (message or "").lower() and await self._try_another_template(lead_id):
             return
         now = self.clock()
         fields = {"status": "error", "error_message": message, "error_at": iso(now), "verified_at": iso(now)}
@@ -516,8 +562,9 @@ class Engine:
         rec = self.db.get(lead_id)
         self._event("error", lead_id, detail=f"phone={rec.get('phone')} error={message}")
         log.error("TEXT ERROR %s (%s) phone=%s: %s", rec.get("lead_name"), lead_id, rec.get("phone"), message)
-        if not rec.get("error_task_created") and await self._task(lead_id, f"First text failed: {message}"):
-            self.db.upsert(lead_id, error_task_created=1)
+        # No Close task on failure — it read as too robotic to the account
+        # owners. The error is still tracked internally (status, events log,
+        # journal) and still counts toward the auto-stop threshold below.
         await self._check_error_spike(now, message)
 
     async def _check_error_spike(self, now: datetime, last_message: str) -> None:
@@ -627,9 +674,9 @@ class Engine:
     # ------------------------------------------------------------ backup sweep
     async def sweep(self) -> int:
         if self.stopped():
-            log.info("STOP file present: sweep paused")
+            log.debug("STOP file present: sweep paused")
             return 0
-        ids = await self.close.view_lead_ids(self.s.smart_view_id)
+        ids = await self.close.recent_candidate_ids_fast()
         recheck = timedelta(minutes=self.s.recheck_skipped_minutes)
         checked = 0
         for lead_id in ids:
@@ -683,4 +730,7 @@ class Engine:
         ]
         if last_sent:
             lines.append(f"Last text: {parse_dt(last_sent['ts']).astimezone(CENTRAL).strftime('%a %b %d %I:%M %p %Z')}")
+        timer_target = parse_dt(self.db.kv_get("timer_resume_at") or "")
+        if timer_target and timer_target > now:
+            lines.append(f"⏱ Auto-resume at {timer_target.astimezone(CENTRAL).strftime('%I:%M %p %Z').lstrip('0')} (/timer cancel to clear)")
         return "\n".join(lines)

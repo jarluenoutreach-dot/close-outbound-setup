@@ -7,6 +7,7 @@ import csv
 import logging
 import logging.handlers
 import sys
+import time
 from datetime import timedelta
 
 from .close_api import CloseClient, CloseError
@@ -77,9 +78,10 @@ async def _dry_run(args, settings) -> None:
     logging.getLogger("outbound").setLevel(logging.WARNING)
     now = engine.clock()
     try:
-        ids = await close.view_lead_ids(settings.smart_view_id)
-        if args.limit:
-            ids = ids[: args.limit]
+        if args.newest:
+            ids = await close.view_lead_ids_newest(settings.smart_view_id, args.newest)
+        else:
+            ids = await close.view_lead_ids(settings.smart_view_id, limit=args.limit or None)
         print(f"DRY RUN — {len(ids)} leads in smart view {settings.smart_view_name} "
               f"({now.astimezone(CENTRAL).strftime('%a %b %d %I:%M %p %Z')})\n", flush=True)
         handled, failed = [], []
@@ -179,17 +181,22 @@ async def _doctor(args, settings) -> None:
         print(f"\nSmart view {settings.smart_view_id}")
         name = await close.view_name(settings.smart_view_id)
         (ok if name else bad)(f"name: {name!r}")
-        ids = await close.view_lead_ids(settings.smart_view_id)
-        ok(f"{len(ids)} leads in the view")
+        ids = await close.view_lead_ids(settings.smart_view_id, limit=100)
+        ok(f"{len(ids)}+ leads in the view (sampled first 100 — doctor doesn't need the full count)"
+           if len(ids) == 100 else f"{len(ids)} leads in the view")
         if ids:
             for lead_id in {ids[0], ids[-1]}:
                 inside = await close.lead_in_view(settings.smart_view_id, lead_id)
                 (ok if inside else bad)(f"membership check says {lead_id} is in the view (mode: {close.membership_mode})")
-            others = await close._request("GET", "/lead/", params={"_limit": 50, "_fields": "id"})
-            outside = next((d["id"] for d in others.get("data", []) if d["id"] not in set(ids)), None)
-            if outside:
-                inside = await close.lead_in_view(settings.smart_view_id, outside)
-                (bad if inside else ok)(f"membership check says {outside} is NOT in the view")
+            if len(ids) == 100:
+                print("  WARN  skipping the 'confirmed outside the view' check — the 100-lead sample is capped, "
+                      "so a lead missing from it isn't reliably outside the real (larger) view")
+            else:
+                others = await close._request("GET", "/lead/", params={"_limit": 50, "_fields": "id"})
+                outside = next((d["id"] for d in others.get("data", []) if d["id"] not in set(ids)), None)
+                if outside:
+                    inside = await close.lead_in_view(settings.smart_view_id, outside)
+                    (bad if inside else ok)(f"membership check says {outside} is NOT in the view")
 
             print("\nLead data (first lead in the view)")
             lead = await close.get_lead(ids[0])
@@ -333,8 +340,14 @@ async def _baseline(args, settings) -> None:
         print(f"Removed the baseline mark from {len(rows)} leads; the sweep will check them again.")
         return
     close = _need_close(settings)
+    t_start = time.monotonic()
+
+    def show_progress(page, total, page_seconds):
+        print(f"  …page {page}: {total} leads so far ({page_seconds:.1f}s this page, "
+              f"{time.monotonic() - t_start:.0f}s elapsed)", flush=True)
+
     try:
-        ids = await close.view_lead_ids(settings.smart_view_id)
+        ids = await close.view_lead_ids(settings.smart_view_id, progress=show_progress)
     finally:
         await close.aclose()
     targets = [i for i in ids if (db.get(i) or {}).get("status", "skipped") == "skipped"]
@@ -412,7 +425,8 @@ def main(argv=None) -> None:
     p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("dry-run", help="check every lead in the smart view now and print who would be texted")
-    p.add_argument("--limit", type=int, default=0, help="only check the first N leads")
+    p.add_argument("--limit", type=int, default=0, help="only check the first N leads (view's own order, usually oldest-ish)")
+    p.add_argument("--newest", type=int, default=0, help="only check the N most-recently-created leads in the view")
     p.set_defaults(func=lambda a, s: asyncio.run(_dry_run(a, s)))
 
     p = sub.add_parser("doctor", help="test the Close API key, smart view, searches, webhook and Telegram")

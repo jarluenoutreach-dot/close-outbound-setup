@@ -36,6 +36,7 @@ RULE_NAMES = {
     "6": "Blocked lead status",
     "7": "Already sent this lead a first text",
     "8": "No contact has a phone number",
+    "9": "Phone number isn't a valid, sendable number",
     "14": "Possible duplicate failed the check — rulebook 14",
     "view": "Left the smart view before sending",
     "gone": "Lead was deleted",
@@ -66,14 +67,17 @@ class Decision:
 
 
 def normalize_phone(phone: str | None) -> str | None:
+    """E.164 form of a sendable number, or None if it can't be parsed or isn't a real number
+    (wrong digit count, bad country code, etc.) — those should never reach Close/Twilio."""
     if not phone:
         return None
     try:
         parsed = phonenumbers.parse(phone, "US")
-        return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
     except phonenumbers.NumberParseException:
-        digits = "".join(ch for ch in phone if ch.isdigit())
-        return f"+{digits}" if digits else None
+        return None
+    if not phonenumbers.is_valid_number(parsed):
+        return None
+    return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 
 
 def lead_name(lead: dict) -> str:
@@ -145,8 +149,11 @@ def precheck(
     status = lead.get("status_label") or ""
     if status.casefold() in _BLOCKED:
         return _fail(base, "6", f"lead status is {status}")
-    if require_phone and not base.phone:
-        return _fail(base, "8", "no contact has a phone number")
+    if require_phone:
+        if not base.phone:
+            return _fail(base, "8", "no contact has a phone number")
+        if not normalize_phone(base.phone):
+            return _fail(base, "9", f"phone number ({base.phone}) is not a valid, sendable number")
     return None
 
 

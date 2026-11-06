@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from outbound.db import Db
 from outbound.engine import Engine
+from outbound.messages import VERSIONS
 
 from .fakes import ME, OTHER, Clock, FakeClose, FakeTelegram, make_settings
 
@@ -154,7 +155,7 @@ def test_scheduled_text_going_out_is_recorded_with_note(tmp_path):
     assert close.notes and close.notes[0][1].startswith("First text sent: Version ")
 
 
-def test_sms_error_webhook_creates_task_and_three_errors_stop(tmp_path):
+def test_sms_error_webhook_no_task_and_three_errors_stop(tmp_path):
     engine, close, tg, clock = setup(tmp_path)
     for i in range(3):
         close.add_lead(f"lead_{i}", phone=f"+1312555010{i}")
@@ -170,7 +171,7 @@ def test_sms_error_webhook_creates_task_and_three_errors_stop(tmp_path):
     run(go())
 
     assert all(engine.db.get(f"lead_{i}")["status"] == "error" for i in range(3))
-    assert ("lead_0", "First text failed: Carrier rejected") in close.tasks
+    assert close.tasks == []  # no task on failure — tracked internally only
     assert engine.s.stop_file.exists()
     assert len(tg.sent) == 1 and "STOPPED" in tg.sent[0]
     assert len(close.created_sms) == 3  # never retried
@@ -192,7 +193,52 @@ def test_two_minute_backup_check_catches_error(tmp_path):
         await engine.verify_tick()
     run(go())
     assert engine.db.get("lead_a")["status"] == "error"
-    assert close.tasks == [("lead_a", "First text failed: Unreachable")]
+    assert close.tasks == []  # no task on failure — tracked internally only
+
+
+def test_carrier_content_rejection_retries_with_another_template(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    close.add_lead("lead_a", name="Sam Smith")
+
+    async def go():
+        await engine.process_lead("lead_a", "webhook")
+        await engine.sender_tick()
+        rec = engine.db.get("lead_a")
+        first_version, sms_id = rec["message_version"], rec["sms_activity_id"]
+        close.sms[sms_id].update(status="error", error_message="flagged as going against carrier guidelines")
+        clock.advance(seconds=121)
+        await engine.verify_tick()
+        return first_version
+    first_version = run(go())
+
+    rec = engine.db.get("lead_a")
+    assert rec["status"] == "sent"  # retried, not given up
+    assert rec["message_version"] != first_version
+    assert {int(v) for v in rec["tried_versions"].split(",")} == {first_version, rec["message_version"]}
+    assert len(close.created_sms) == 2  # original + one retry
+    assert close.tasks == []  # no "failed" task yet — still in flight
+
+
+def test_carrier_content_rejection_gives_up_after_all_templates_tried(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    close.add_lead("lead_a", name="Sam Smith")
+
+    async def go():
+        await engine.process_lead("lead_a", "webhook")
+        await engine.sender_tick()
+        # Every subsequent send also gets flagged — walk through all template versions.
+        for _ in range(len(VERSIONS)):
+            rec = engine.db.get("lead_a")
+            close.sms[rec["sms_activity_id"]].update(
+                status="error", error_message="flagged as going against carrier guidelines")
+            clock.advance(seconds=121)
+            await engine.verify_tick()
+    run(go())
+
+    rec = engine.db.get("lead_a")
+    assert rec["status"] == "error"  # out of templates to try, finally gives up
+    assert len(close.created_sms) == len(VERSIONS)  # tried every version exactly once
+    assert close.tasks == []  # no task on failure — tracked internally only
 
 
 def test_create_failure_is_an_error_and_not_retried(tmp_path):
@@ -206,7 +252,7 @@ def test_create_failure_is_an_error_and_not_retried(tmp_path):
         await engine.process_lead("lead_a", "sweep")
     run(go())
     assert engine.db.get("lead_a")["status"] == "error"
-    assert close.tasks == [("lead_a", "First text failed: invalid remote_phone")]
+    assert close.tasks == []  # no task on failure — tracked internally only
 
 
 def test_duplicate_failing_check_skips_and_creates_task(tmp_path):

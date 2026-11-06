@@ -89,11 +89,10 @@ def phone_query(phone: str) -> dict:
 
 
 def id_query(lead_id: str) -> dict:
-    return {
-        "type": "field_condition",
-        "field": {"type": "regular_field", "object_type": "lead", "field_name": "id"},
-        "condition": {"type": "term", "values": [lead_id]},
-    }
+    # Advanced Filtering's dedicated id-match query type (not a regular_field —
+    # "id" isn't a filterable lead field; Close rejects that with a 400).
+    # https://developer.close.com/api/resources/advanced-filtering/search
+    return {"type": "id", "value": lead_id}
 
 
 class CloseClient:
@@ -207,22 +206,119 @@ class CloseClient:
         view = await self._request("GET", f"/saved_search/{view_id}/")
         return (view or {}).get("name", "")
 
-    async def view_lead_ids(self, view_id: str) -> list[str]:
+    async def view_lead_ids(self, view_id: str, limit: int | None = None, progress=None) -> list[str]:
+        """All lead ids currently matching the view's query, paginated 200 at a time.
+
+        `limit` stops pagination early once at least that many ids are collected
+        (for sampling — e.g. the doctor command — on a view with thousands of
+        leads). It is never used by the engine or `baseline`, which need every
+        id, so a limited call is NOT written to the membership cache.
+
+        `progress`, if given, is called after every page as progress(page_num,
+        total_ids_so_far, this_page_seconds) — for CLI visibility on a slow,
+        deep-paginating view. Never used by the engine's hot path.
+        """
         query = await self.view_query(view_id)
+        # Close: paginated results need a stable sort ("a field that rarely
+        # changes, like date_created") or pages can overlap/repeat leads
+        # instead of advancing. Without this, a plain list.extend() per page
+        # can grow unbounded on a large view instead of ever finishing.
+        sort = [{"direction": "asc", "field": {"type": "regular_field", "field_name": "date_created", "object_type": "lead"}}]
         ids: list[str] = []
+        seen: set[str] = set()
         cursor = None
+        page = 0
         while True:
-            body = {"query": query, "_fields": {"lead": ["id"]}, "_limit": 200}
+            body = {"query": query, "sort": sort, "_fields": {"lead": ["id"]}, "_limit": 200}
             if cursor:
                 body["_cursor"] = cursor
+            page += 1
+            t0 = time.monotonic()
             data = await self._search(body)
             batch = data.get("data", [])
-            ids.extend(d["id"] for d in batch if d.get("id"))
+            new = 0
+            for d in batch:
+                lead_id = d.get("id")
+                if lead_id and lead_id not in seen:
+                    seen.add(lead_id)
+                    ids.append(lead_id)
+                    new += 1
+            if progress:
+                progress(page, len(ids), time.monotonic() - t0)
             cursor = data.get("cursor")
-            if not cursor or not batch:
+            if limit is not None and len(ids) >= limit:
+                ids = ids[:limit]
                 break
-        self._view_ids_cache[view_id] = (time.monotonic(), ids)
+            # Safety valve: a page that's entirely leads we've already seen
+            # means pagination has stopped advancing (shouldn't happen with
+            # a stable sort, but never loop forever on it).
+            if not cursor or not batch or new == 0:
+                break
+        if limit is None:
+            self._view_ids_cache[view_id] = (time.monotonic(), ids)
         return ids
+
+    async def view_lead_ids_newest(self, view_id: str, limit: int) -> list[str]:
+        """The `limit` most-recently-created leads matching the view's query.
+
+        For sampling only (dry-run --newest) — unlike view_lead_ids, this doesn't
+        paginate or touch the membership cache, it's a single sorted, capped search.
+        """
+        query = await self.view_query(view_id)
+        body = {
+            "query": query,
+            "_fields": {"lead": ["id"]},
+            "_limit": limit,
+            "sort": [{"direction": "desc", "field": {"type": "regular_field", "field_name": "date_created", "object_type": "lead"}}],
+        }
+        data = await self._search(body)
+        return [d["id"] for d in data.get("data", []) if d.get("id")]
+
+    # ---- fast discovery -----------------------------------------------------
+    # Close's Advanced Filtering index lags noticeably behind real time for a
+    # *complex* joined query like the Webinar Workflow view's (several
+    # has_related clauses across contacts/activities) — measured directly: a
+    # brand-new lead can take 20+ seconds to show up via view_lead_ids, long
+    # enough for a human setter to text the lead first. A *simple* query
+    # (object_type + date_created only) is not laggy. So: find recent leads
+    # the fast way, then check each one's Webinar Workflow eligibility via
+    # direct per-lead reads instead of Close's slow joined search. This
+    # re-implements the view's own criteria in Python, not a new policy.
+    _WEBINAR_OPT_IN_TYPE_ID = "actitype_1iw6wmALcvEY1euBXeBUG2"
+    _WEBINAR_OPT_IN_FIELD_ID = "cf_YFKGbgBKBYvkkOylqkvNQYiiEFStXwhERDhLutMrILQ"
+    _WEBINAR_EXCLUDE_TYPE_ID = "actitype_1Oxr345iC7pt2WVvknKox4"
+    _STOP_WORDS = ("STOP", "UNSUBSCRIBE", "END", "CANCEL", "QUIT", "STOPALL")
+
+    async def _fast_candidate_matches_view(self, lead: dict) -> bool:
+        lead_id = lead["id"]
+        if (lead.get("times_communicated") or 0) >= 1 or (lead.get("num_error_sms") or 0) >= 1:
+            return False
+        contacts = lead.get("contacts") or []
+        if not any((c.get("emails") or []) and any(not e.get("is_unsubscribed") for e in c["emails"]) for c in contacts):
+            return False
+        acts = (await self._request("GET", "/activity/custom/", params={"lead_id": lead_id, "_limit": 20})).get("data", [])
+        type_ids = {a.get("custom_activity_type_id") for a in acts}
+        if self._WEBINAR_EXCLUDE_TYPE_ID in type_ids:
+            return False
+        if not any(a.get("custom_activity_type_id") == self._WEBINAR_OPT_IN_TYPE_ID
+                   and a.get(f"custom.{self._WEBINAR_OPT_IN_FIELD_ID}") == "Webinar Opt-In" for a in acts):
+            return False
+        sms = (await self._request("GET", "/activity/sms/", params={"lead_id": lead_id, "_limit": 50})).get("data", [])
+        return not any(w in (a.get("text") or "").upper().split() for a in sms for w in self._STOP_WORDS)
+
+    async def recent_candidate_ids_fast(self, lookback_minutes: int = 15, limit: int = 50) -> list[str]:
+        import datetime
+        since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=lookback_minutes)
+        body = {
+            "query": {"type": "and", "queries": [_LEAD_ONLY, {"type": "field_condition",
+                "field": {"type": "regular_field", "object_type": "lead", "field_name": "date_created"},
+                "condition": {"type": "moment_range", "on_or_after": {"type": "fixed_utc", "value": since.isoformat()}}}]},
+            "sort": [{"direction": "desc", "field": {"type": "regular_field", "field_name": "date_created", "object_type": "lead"}}],
+            "_fields": {"lead": ["id", "date_created", "times_communicated", "num_error_sms", "contacts"]},
+            "_limit": limit,
+        }
+        data = await self._search(body)
+        return [l["id"] for l in data.get("data", []) if await self._fast_candidate_matches_view(l)]
 
     async def lead_in_view(self, view_id: str, lead_id: str) -> bool:
         if self.membership_mode == "filter":
