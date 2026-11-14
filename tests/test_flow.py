@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from outbound.db import Db
 from outbound.engine import Engine
+from outbound.messages import VERSIONS
 
 from .fakes import ME, OTHER, Clock, FakeClose, FakeTelegram, make_settings
 
@@ -20,7 +21,8 @@ async def _nosleep(_):
 
 
 def setup(tmp_path, start=DAY, dry_run=False, **settings):
-    close, tg, clock = FakeClose(), FakeTelegram(), Clock(start)
+    clock = Clock(start)
+    close, tg = FakeClose(clock=clock), FakeTelegram()
     engine = Engine(make_settings(tmp_path, **settings), Db(), close, tg, dry_run=dry_run, clock=clock,
                     sleep=_nosleep, rng=random.Random(1))
     return engine, close, tg, clock
@@ -154,7 +156,7 @@ def test_scheduled_text_going_out_is_recorded_with_note(tmp_path):
     assert close.notes and close.notes[0][1].startswith("First text sent: Version ")
 
 
-def test_sms_error_webhook_creates_task_and_three_errors_stop(tmp_path):
+def test_sms_error_webhook_no_task_and_three_errors_stop(tmp_path):
     engine, close, tg, clock = setup(tmp_path)
     for i in range(3):
         close.add_lead(f"lead_{i}", phone=f"+1312555010{i}")
@@ -170,7 +172,7 @@ def test_sms_error_webhook_creates_task_and_three_errors_stop(tmp_path):
     run(go())
 
     assert all(engine.db.get(f"lead_{i}")["status"] == "error" for i in range(3))
-    assert ("lead_0", "First text failed: Carrier rejected") in close.tasks
+    assert close.tasks == []  # no task on failure — tracked internally only
     assert engine.s.stop_file.exists()
     assert len(tg.sent) == 1 and "STOPPED" in tg.sent[0]
     assert len(close.created_sms) == 3  # never retried
@@ -192,7 +194,52 @@ def test_two_minute_backup_check_catches_error(tmp_path):
         await engine.verify_tick()
     run(go())
     assert engine.db.get("lead_a")["status"] == "error"
-    assert close.tasks == [("lead_a", "First text failed: Unreachable")]
+    assert close.tasks == []  # no task on failure — tracked internally only
+
+
+def test_carrier_content_rejection_retries_with_another_template(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    close.add_lead("lead_a", name="Sam Smith")
+
+    async def go():
+        await engine.process_lead("lead_a", "webhook")
+        await engine.sender_tick()
+        rec = engine.db.get("lead_a")
+        first_version, sms_id = rec["message_version"], rec["sms_activity_id"]
+        close.sms[sms_id].update(status="error", error_message="flagged as going against carrier guidelines")
+        clock.advance(seconds=121)
+        await engine.verify_tick()
+        return first_version
+    first_version = run(go())
+
+    rec = engine.db.get("lead_a")
+    assert rec["status"] == "sent"  # retried, not given up
+    assert rec["message_version"] != first_version
+    assert {int(v) for v in rec["tried_versions"].split(",")} == {first_version, rec["message_version"]}
+    assert len(close.created_sms) == 2  # original + one retry
+    assert close.tasks == []  # no "failed" task yet — still in flight
+
+
+def test_carrier_content_rejection_gives_up_after_all_templates_tried(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    close.add_lead("lead_a", name="Sam Smith")
+
+    async def go():
+        await engine.process_lead("lead_a", "webhook")
+        await engine.sender_tick()
+        # Every subsequent send also gets flagged — walk through all template versions.
+        for _ in range(len(VERSIONS)):
+            rec = engine.db.get("lead_a")
+            close.sms[rec["sms_activity_id"]].update(
+                status="error", error_message="flagged as going against carrier guidelines")
+            clock.advance(seconds=121)
+            await engine.verify_tick()
+    run(go())
+
+    rec = engine.db.get("lead_a")
+    assert rec["status"] == "error"  # out of templates to try, finally gives up
+    assert len(close.created_sms) == len(VERSIONS)  # tried every version exactly once
+    assert close.tasks == []  # no task on failure — tracked internally only
 
 
 def test_create_failure_is_an_error_and_not_retried(tmp_path):
@@ -206,7 +253,7 @@ def test_create_failure_is_an_error_and_not_retried(tmp_path):
         await engine.process_lead("lead_a", "sweep")
     run(go())
     assert engine.db.get("lead_a")["status"] == "error"
-    assert close.tasks == [("lead_a", "First text failed: invalid remote_phone")]
+    assert close.tasks == []  # no task on failure — tracked internally only
 
 
 def test_duplicate_failing_check_skips_and_creates_task(tmp_path):
@@ -307,6 +354,35 @@ def test_webhook_burst_is_coalesced(tmp_path):
     assert engine.db.get("lead_a")["status"] == "queued"
 
 
+def test_sweep_widens_lookback_after_a_pause_gap(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+
+    async def go():
+        await engine.sweep()  # first sweep: no gap yet, default lookback
+        assert close.last_lookback_minutes == 15
+        clock.advance(hours=2)  # simulate a long pause (stop file, Telegram, whatever)
+        await engine.sweep()  # first sweep after the gap: should widen to cover it
+        assert close.last_lookback_minutes >= 120
+        clock.advance(seconds=5)
+        await engine.sweep()  # back to normal once caught up
+        assert close.last_lookback_minutes == 15
+    run(go())
+
+
+def test_sweep_does_not_widen_lookback_while_stopped(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+
+    async def go():
+        await engine.sweep()
+        engine.s.stop_file.write_text("stopped")
+        clock.advance(hours=2)
+        assert await engine.sweep() == 0  # paused: does nothing, doesn't even call Close
+        engine.s.stop_file.unlink()
+        await engine.sweep()  # first sweep after resuming: now it should widen
+        assert close.last_lookback_minutes >= 120
+    run(go())
+
+
 def test_pacific_lead_at_9pm_central_is_still_in_its_window(tmp_path):
     engine, close, *_ = setup(tmp_path, start=NIGHT)  # 9pm CT = 7pm PT
     close.add_lead("lead_sf", phone="+14155550100")
@@ -335,3 +411,258 @@ def test_baseline_leads_are_left_alone(tmp_path):
     run(engine.on_lead_event("lead_old"))
     assert engine.db.get("lead_old")["status"] == "baseline"
     assert engine.db.get("lead_new")["status"] == "queued"
+
+
+# --------------------------------------------------------- follow-up buttons
+def _send_first_text(engine, close, lead_id="lead_a", name="Sam Smith"):
+    close.add_lead(lead_id, name=name)
+    run(engine.process_lead(lead_id, "webhook"))
+    run(engine.sender_tick())
+    assert engine.db.get(lead_id)["status"] == "sent"
+    return lead_id
+
+
+def test_reply_notifies_with_buttons_for_the_current_step(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    lead_id = _send_first_text(engine, close)
+    close.add_activity("sms", lead_id, id="acti_reply1", direction="inbound", text="Yes I'm interested!")
+
+    run(engine.reply_tick())
+
+    assert len(tg.sent_with_buttons) == 1
+    text, buttons = tg.sent_with_buttons[0]
+    assert "Sam" in text and "Yes I'm interested!" in text
+    assert [label for label, _ in buttons] == ["Msg 2", "✏️ Write my own", "🚫 No action needed"]
+    assert engine.db.get(lead_id)["followup_notified_sms_id"] == "acti_reply1"
+
+    run(engine.reply_tick())  # same reply again: must not re-notify
+    assert len(tg.sent_with_buttons) == 1
+
+
+def test_tapping_a_button_sends_the_exact_pre_written_text_and_advances(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    lead_id = _send_first_text(engine, close)
+    close.add_activity("sms", lead_id, id="acti_reply1", direction="inbound", text="yes")
+    run(engine.reply_tick())
+    _, buttons = tg.sent_with_buttons[0]
+    token = buttons[0][1]  # the "Msg 2" button's token
+
+    result = run(engine.handle_followup_button(token))
+
+    assert "Cool, what state are you from" in result
+    assert close.created_sms[-1]["text"] == "Cool, what state are you from and what do you do for work?"
+    assert engine.db.get(lead_id)["followup_step"] == "msg2"
+
+
+def test_a_used_or_unknown_button_token_is_rejected_not_resent(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    lead_id = _send_first_text(engine, close)
+    close.add_activity("sms", lead_id, id="acti_reply1", direction="inbound", text="yes")
+    run(engine.reply_tick())
+    _, buttons = tg.sent_with_buttons[0]
+    token = buttons[0][1]
+    run(engine.handle_followup_button(token))  # first tap: consumes it
+    sent_before = len(close.created_sms)
+
+    result = run(engine.handle_followup_button(token))  # tapped again (or a stale copy)
+
+    assert "already" in result.lower() or "expired" in result.lower()
+    assert len(close.created_sms) == sent_before  # nothing new sent
+
+
+def test_a_different_button_in_the_same_notification_can_correct_a_wrong_tap(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    lead_id = _send_first_text(engine, close)
+    # Walk the lead to the msg3 step, which offers two options (positive/empathetic).
+    close.add_activity("sms", lead_id, id="acti_1", direction="inbound", text="yes", date_created=clock.now.isoformat())
+    run(engine.reply_tick())
+    first_buttons = tg.sent_with_buttons[0][1]
+    run(engine.handle_followup_button(first_buttons[0][1]))  # tap "Msg 2"
+    clock.advance(minutes=1)
+    close.add_activity("sms", lead_id, id="acti_2", direction="inbound", text="because freedom", date_created=clock.now.isoformat())
+    run(engine.reply_tick())
+    second_buttons = tg.sent_with_buttons[1][1]
+    run(engine.handle_followup_button(second_buttons[0][1]))  # tap "Msg 3"
+    clock.advance(minutes=1)
+    close.add_activity("sms", lead_id, id="acti_3", direction="inbound", text="I got laid off", date_created=clock.now.isoformat())
+    run(engine.reply_tick())
+    buttons = tg.sent_with_buttons[2][1]
+    labels = [label for label, _ in buttons]
+    assert labels[:2] == ["Msg 4 (positive)", "Msg 4 (empathetic)"]
+    wrong_token = buttons[0][1]  # tapped "positive" by mistake
+    right_token = buttons[1][1]  # meant "empathetic"
+
+    first = run(engine.handle_followup_button(wrong_token))
+    assert "Love that" in first
+    second = run(engine.handle_followup_button(right_token))  # correct the mistake
+
+    assert "sorry to hear" in second
+    assert "can't be unsent" in second
+    assert engine.db.get(lead_id)["followup_step"] == "msg4"
+    assert [s["text"] for s in close.created_sms[-2:]] == [
+        "Love that. Are you looking for coaching and mentorship to help you get started, "
+        "or are you planning to figure things out on your own?",
+        "I'm sorry to hear that. Are you looking for coaching and mentorship to help you get started, "
+        "or are you planning to figure things out on your own?",
+    ]
+
+
+def test_write_my_own_then_say_sends_the_humans_exact_text(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    lead_id = _send_first_text(engine, close)
+    close.add_activity("sms", lead_id, id="acti_reply1", direction="inbound", text="what's the catch?")
+    run(engine.reply_tick())
+    _, buttons = tg.sent_with_buttons[0]
+    custom_token = buttons[-2][1]
+    assert buttons[-2][0] == "✏️ Write my own"
+
+    prompt = run(engine.handle_followup_button(custom_token))
+    assert "/say" in prompt and "Sam Smith" in prompt
+
+    result = run(engine.handle_custom_send("/say No catch at all, just want to help!"))
+
+    assert close.created_sms[-1]["text"] == "No catch at all, just want to help!"
+    assert "Sam Smith" in result
+
+    # The pending slot is cleared after use — a second /say with nothing queued is rejected.
+    again = run(engine.handle_custom_send("/say another message"))
+    assert "no pending" in again.lower()
+    assert len(close.created_sms) == 2  # first text + the one custom send, nothing extra
+
+
+def test_followup_step_catches_up_when_a_human_texts_the_script_directly(tmp_path):
+    from outbound.followup import MSG_3
+
+    engine, close, tg, clock = setup(tmp_path)
+    lead_id = _send_first_text(engine, close)
+    # A teammate replies in Close itself, skipping our buttons entirely, and jumps to Msg 3.
+    close.add_activity("sms", lead_id, direction="outbound", text=MSG_3, date_created=clock.now.isoformat())
+    close.add_activity("sms", lead_id, id="acti_reply1", direction="inbound", text="because freedom",
+                        date_created=clock.now.isoformat())
+
+    run(engine.reply_tick())
+
+    assert engine.db.get(lead_id)["followup_step"] == "msg3"
+    _, buttons = tg.sent_with_buttons[0]
+    labels = [label for label, _ in buttons]
+    assert labels[:2] == ["Msg 4 (positive)", "Msg 4 (empathetic)"]  # msg3 step's options, not Msg 2
+
+
+def test_dismiss_button_marks_handled_and_clears_from_pending(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    lead_id = _send_first_text(engine, close)
+    close.add_activity("sms", lead_id, id="acti_reply1", direction="inbound", text="not interested",
+                        date_created=clock.now.isoformat())
+    run(engine.reply_tick())
+    _, buttons = tg.sent_with_buttons[0]
+    dismiss_token = buttons[-1][1]
+    assert buttons[-1][0] == "🚫 No action needed"
+
+    sent_before = len(close.created_sms)
+    result = run(engine.handle_followup_button(dismiss_token))
+
+    assert "no action needed" in result.lower()
+    assert len(close.created_sms) == sent_before  # dismiss never sends anything
+    pending = run(engine.pending_summary())
+    assert "nothing pending" in pending.lower()
+
+
+def test_pending_summary_lists_unanswered_replies_then_clears_after_a_response(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    lead_id = _send_first_text(engine, close)
+    clock.advance(minutes=1)
+    close.add_activity("sms", lead_id, id="acti_reply1", direction="inbound", text="tell me more",
+                        date_created=clock.now.isoformat())
+
+    pending = run(engine.pending_summary())
+    assert "Sam Smith" in pending and "tell me more" in pending
+
+    run(engine.reply_tick())
+    _, buttons = tg.sent_with_buttons[0]
+    run(engine.handle_followup_button(buttons[0][1]))  # answer it (real send-time clock advances this)
+
+    pending_after = run(engine.pending_summary())
+    assert "nothing pending" in pending_after.lower()
+
+
+def test_custom_message_overwrite_warns_about_the_replaced_lead(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    lead_a = _send_first_text(engine, close, lead_id="lead_a", name="Alice")
+    clock.advance(seconds=20)  # clear the per-send rate limit
+    close.add_lead("lead_b", name="Bob", phone="+13125550199")
+    run(engine.process_lead("lead_b", "webhook"))
+    run(engine.sender_tick())
+    assert engine.db.get("lead_b")["status"] == "sent"
+
+    close.add_activity("sms", lead_a, id="acti_a", direction="inbound", text="hi", date_created=clock.now.isoformat())
+    close.add_activity("sms", "lead_b", id="acti_b", direction="inbound", text="hey", date_created=clock.now.isoformat())
+    run(engine.reply_tick())
+    buttons_a = tg.sent_with_buttons[0][1]
+    buttons_b = tg.sent_with_buttons[1][1]
+
+    run(engine.handle_followup_button(buttons_a[-2][1]))  # tap "Write my own" for Alice first
+    result = run(engine.handle_followup_button(buttons_b[-2][1]))  # then for Bob, without sending Alice's first
+
+    assert "Alice" in result and "replaced" in result.lower()
+    send_result = run(engine.handle_custom_send("/say hello"))
+    assert "Bob" in send_result  # the most recent tap wins
+
+
+def test_report_includes_reply_funnel_by_furthest_step(tmp_path):
+    from outbound.report import build_report
+
+    engine, close, tg, clock = setup(tmp_path)
+    lead_a = _send_first_text(engine, close, lead_id="lead_a", name="Alice")
+    clock.advance(seconds=20)
+    close.add_lead("lead_b", name="Bob", phone="+13125550199")
+    run(engine.process_lead("lead_b", "webhook"))
+    run(engine.sender_tick())
+    engine.db.upsert(lead_a, followup_step="msg2")  # Alice progressed to Msg 2, Bob stayed at opener
+
+    report = run(build_report(engine, clock.now))
+
+    assert "Reply funnel" in report
+    assert "Reached Msg 2: 1 (50%)" in report
+    assert "Texted (opener sent): 2 (100%)" in report
+
+
+def test_stop_file_pauses_new_outbound_but_not_reply_notifications(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    lead_id = _send_first_text(engine, close)
+    engine.s.stop_file.write_text("stopped")
+    close.add_lead("lead_new", phone="+13125550111")
+
+    close.add_activity("sms", lead_id, id="acti_reply1", direction="inbound", text="still here")
+    notified = run(engine.reply_tick())
+    assert notified == 1  # keeps notifying on existing conversations while stopped
+    assert len(tg.sent_with_buttons) == 1
+
+    run(engine.process_lead("lead_new", "webhook"))
+    assert engine.db.get("lead_new") is None  # but a brand new lead is not touched
+
+    # Buttons and /say still work while stopped, too.
+    buttons = tg.sent_with_buttons[0][1]
+    result = run(engine.handle_followup_button(buttons[0][1]))
+    assert "Cool, what state are you from" in result
+
+
+def test_reply_to_a_different_teammates_number_is_not_mistaken_for_a_reply_to_us(tmp_path):
+    engine, close, tg, clock = setup(tmp_path)
+    lead_id = _send_first_text(engine, close, name="Cortasha")
+    # A different teammate also texted this lead from their own number, and
+    # the lead replied to THAT message — not to ours.
+    close.add_activity("sms", lead_id, direction="outbound", local_phone="+19786338506",
+                        text="Hi Cortasha! My name is Hazel.", date_created=clock.now.isoformat())
+    close.add_activity("sms", lead_id, id="acti_wrong_thread", direction="inbound", local_phone="+19786338506",
+                        text="No", date_created=clock.now.isoformat())
+
+    notified = run(engine.reply_tick())
+
+    assert notified == 0  # not our conversation thread — must not notify
+    pending = run(engine.pending_summary())
+    assert "nothing pending" in pending.lower()
+
+    # A genuine reply to OUR number (the default local_phone) still works.
+    close.add_activity("sms", lead_id, id="acti_right_thread", direction="inbound",
+                        text="Yes interested", date_created=clock.now.isoformat())
+    assert run(engine.reply_tick()) == 1

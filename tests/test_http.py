@@ -103,11 +103,11 @@ def test_smart_view_membership_and_fallback():
         if request.url.path.endswith("/data/search/"):
             body = json.loads(request.content)
             queries = body["query"]["queries"]
-            id_filter = [q for q in queries if q.get("type") == "field_condition"]
+            id_filter = [q for q in queries if q.get("type") == "id"]
             if id_filter:
                 if state["reject_filter"]:
                     return httpx.Response(400, json={"error": "bad query"})
-                wanted = id_filter[0]["condition"]["values"][0]
+                wanted = id_filter[0]["value"]
                 return httpx.Response(200, json={"data": [{"id": wanted}] if wanted in members else [], "cursor": None})
             if not body.get("_cursor"):
                 return httpx.Response(200, json={"data": [{"id": "lead_a"}], "cursor": "c2"})

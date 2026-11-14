@@ -5,7 +5,7 @@ import itertools
 from datetime import datetime, timedelta, timezone
 
 from outbound.close_api import CloseError
-from outbound.config import Settings
+from outbound.config import DEFAULT_LOCAL_PHONE, Settings
 from outbound.eligibility import lead_phones, normalize_phone
 
 ME = "user_me"
@@ -13,7 +13,9 @@ OTHER = "user_other"
 
 
 class FakeClose:
-    def __init__(self):
+    def __init__(self, clock=None, local_phone=None):
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.local_phone = local_phone or DEFAULT_LOCAL_PHONE
         self.leads: dict[str, dict] = {}
         self.view: set[str] = set()
         self.activities: dict[tuple[str, str], list[dict]] = {}
@@ -22,6 +24,7 @@ class FakeClose:
         self.deleted_sms: list[str] = []
         self.notes: list[tuple[str, str]] = []
         self.tasks: list[tuple[str, str]] = []
+        self.last_lookback_minutes: int | None = None
         self.fail_create_sms: str | None = None
         self.calls = 0
         self._ids = itertools.count(1)
@@ -41,6 +44,8 @@ class FakeClose:
 
     def add_activity(self, kind, lead_id, **fields):
         fields.setdefault("id", f"{kind}_{next(self._ids)}")
+        if kind == "sms":
+            fields.setdefault("local_phone", self.local_phone)
         self.activities.setdefault((kind, lead_id), []).append(fields)
         if kind == "sms":
             self.sms[fields["id"]] = fields
@@ -75,6 +80,14 @@ class FakeClose:
             return sorted(self.views[view_id])
         return sorted(self.view)
 
+    async def recent_candidate_ids_fast(self, lookback_minutes=15, limit=50):
+        # The fake has no notion of Close's search-index lag or a separate
+        # fast path — it's a plain in-memory model, so this is equivalent to
+        # view_lead_ids for test purposes. Records the lookback it was asked
+        # for so tests can confirm the engine widens it after a pause.
+        self.last_lookback_minutes = lookback_minutes
+        return sorted(self.view)
+
     async def find_lead_ids_by_phone(self, phone):
         return [lid for lid, lead in self.leads.items() if normalize_phone(phone) in lead_phones(lead)]
 
@@ -82,7 +95,7 @@ class FakeClose:
         if self.fail_create_sms:
             raise CloseError(400, self.fail_create_sms)
         sms = {**payload, "id": f"acti_{next(self._ids)}", "direction": "outbound", "user_id": ME,
-               "date_created": datetime.now(timezone.utc).isoformat()}
+               "date_created": self.clock().isoformat()}
         self.created_sms.append(sms)
         self.sms[sms["id"]] = sms
         self.activities.setdefault(("sms", payload["lead_id"]), []).append(sms)
@@ -108,11 +121,20 @@ class FakeClose:
 class FakeTelegram:
     def __init__(self):
         self.sent: list[str] = []
-        self.token = ""
+        self.sent_with_buttons: list[tuple[str, list[tuple[str, str]]]] = []
+        self.token = "fake-token"
         self.chat_id = "1"
+
+    @property
+    def enabled(self):
+        return bool(self.token and self.chat_id)
 
     async def send(self, text, chat_id=None):
         self.sent.append(text)
+        return True
+
+    async def send_with_buttons(self, text, buttons, chat_id=None):
+        self.sent_with_buttons.append((text, buttons))
         return True
 
 

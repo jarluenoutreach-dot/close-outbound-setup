@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from outbound.eligibility import check_activities, precheck
+from outbound.followup import MSG_2, MSG_3, PATH_B, sync_step
 from outbound.messages import clean_first_name, render
 from outbound.security import sign, verify_signature
 from outbound.timeutil import parse_dt
@@ -84,6 +85,11 @@ def test_rule8_no_phone():
     assert precheck(lead(phone=None), local_record=None).rule == "8"
 
 
+def test_rule9_unsendable_phone():
+    # Too few digits for a real US number — phonenumbers parses it but marks it invalid.
+    assert precheck(lead(phone="+1654964057"), local_record=None).rule == "9"
+
+
 # ---------------------------------------------------------- timezones
 def test_zones_from_area_code():
     assert [z.key for z in zones_for_phone("+12125550100")] == ["America/New_York"]
@@ -97,6 +103,13 @@ def test_send_window():
     assert in_send_window(datetime(2026, 11, 5, 13, 0, tzinfo=UTC), eastern)  # 8:00 ET
     assert not in_send_window(datetime(2026, 11, 5, 12, 59, tzinfo=UTC), eastern)
     assert not in_send_window(datetime(2026, 11, 6, 1, 0, tzinfo=UTC), eastern)  # 8:00pm ET
+
+
+def test_send_window_half_hour_end():
+    eastern = zones_for_phone("+12125550100")
+    assert in_send_window(datetime(2026, 11, 6, 1, 0, tzinfo=UTC), eastern, end_minute=30)  # 8:00pm ET
+    assert in_send_window(datetime(2026, 11, 6, 1, 29, tzinfo=UTC), eastern, end_minute=30)  # 8:29pm ET
+    assert not in_send_window(datetime(2026, 11, 6, 1, 30, tzinfo=UTC), eastern, end_minute=30)  # 8:30pm ET
 
 
 def test_next_send_time_central_for_east_local_for_west():
@@ -118,8 +131,7 @@ def test_pacific_lead_early_morning_gets_same_day_8am_local():
 # ----------------------------------------------------------- messages
 def test_messages():
     assert render(1, "Sam").startswith("Hey Sam! My name is Jarluen.")
-    assert render(2, None).startswith("Hey! This is Jarluen")
-    assert render(3, None).startswith("Hi! Jarluen here")
+    assert render(2, None).startswith("Hi! Jarluen here")
     assert clean_first_name("SAM SMITH") == "Sam"
     assert clean_first_name("+1 312 555 0100") is None
     assert clean_first_name("") is None
@@ -138,6 +150,15 @@ def test_signature_verification():
     assert not verify_signature(key, body, None, ts)
     assert not verify_signature("", body, good, ts)
     assert not verify_signature(key, body, "0" * 64, ts, now=1700000010)
+
+
+# --------------------------------------------------------- followup sync
+def test_sync_step_catches_up_to_the_furthest_text_sent():
+    assert sync_step("opener", [MSG_3]) == "msg3"  # jumps ahead even skipping msg2
+    assert sync_step("msg3", [PATH_B]) == "done"
+    assert sync_step("msg4", [MSG_2]) == "msg4"  # never goes backward
+    assert sync_step("opener", ["something unrelated"]) == "opener"
+    assert sync_step("opener", []) == "opener"
 
 
 def test_parse_dt_formats():

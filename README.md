@@ -48,7 +48,7 @@ The text goes to the first contact that has a phone. The time zone comes from th
 
 ## Follow-up sequences (nurture + SS prep)
 
-The same service also runs two follow-up sequences. They replace Close workflows: nothing is set up in Close except two **private** smart views, and every text goes out from **+1 978-666-9462** as you (the API key's owner). Both are **off** until you set `NURTURE_ENABLED=true` / `PREP_ENABLED=true` in `.env`.
+The same service also runs two follow-up sequences. They replace Close workflows: nothing is set up in Close except two **private** smart views, and every text goes out from **+1 978-666-9462** as you (the API key's owner). Both are **on** by default; set `NURTURE_ENABLED=false` or `PREP_ENABLED=false` in `.env` to turn one off.
 
 **Send window:** Mon–Sat, 9am–6pm Central (`SEQ_WINDOW_*`). A text that comes due outside the window waits for the next opening. The 15s gap / 60-per-hour cap and the `STOP` file are shared with the first texts.
 
@@ -82,11 +82,10 @@ The service reads the upcoming meeting from Close:
 
 Each lead goes through each sequence **once**. Every text adds a note on the lead ("Booked nurture text 2/8 (nudge) sent"). A failed text stops that lead's sequence and creates a Close task; 3 failures in an hour creates `STOP`.
 
-### Turning them on
+### Going live
 ```bash
-outbound seq-preview                 # who is in each view and what text 1 would be; nothing is sent
-sudo nano /opt/close-outbound-setup/.env   # NURTURE_ENABLED=true, PREP_ENABLED=true
-sudo systemctl restart close-outbound
+outbound seq-preview                 # who is in each view; nothing is sent
+sudo ./deploy/update.sh              # pulls the code and restarts: both sequences start
 outbound seq-status                  # active runs and the next text for each
 ```
 
