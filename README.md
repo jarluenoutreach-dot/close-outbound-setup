@@ -78,12 +78,13 @@ The service reads the upcoming meeting from Close:
 
 **Stops when:** the lead texts back, calls in, the lead status changes, the call time passes, or the lead leaves the view (for example the opportunity moves to SS Completed). A lead that gets booked while in the nurture is moved over: the nurture stops and the prep texts start.
 
+**Only new leads:** the first time each sequence runs after you turn it on, everyone already in its smart view is marked "leave alone" and never texted. Only leads that join the view after that get the texts. (`outbound seq-baseline --undo` would release them.)
+
 Each lead goes through each sequence **once**. Every text adds a note on the lead ("Booked nurture text 2/8 (nudge) sent"). A failed text stops that lead's sequence and creates a Close task; 3 failures in an hour creates `STOP`.
 
 ### Turning them on
 ```bash
 outbound seq-preview                 # who is in each view and what text 1 would be; nothing is sent
-outbound seq-baseline nurture --yes  # optional: leave current nurture leads alone, only text new ones
 sudo nano /opt/close-outbound-setup/.env   # NURTURE_ENABLED=true, PREP_ENABLED=true
 sudo systemctl restart close-outbound
 outbound seq-status                  # active runs and the next text for each

@@ -203,6 +203,19 @@ class SequenceRunner:
             return 0
         ids = await self.close.view_lead_ids(self.view_id(sequence))
         members = set(ids)
+        start_key = f"seq_started:{sequence}"
+        if self.db.kv_get(start_key) is None:
+            # First sweep since this sequence was turned on: only leads that join from now on get texts.
+            marked = 0
+            for lead_id in ids:
+                if self.db.seq_get(sequence, lead_id) is None:
+                    self.db.seq_upsert(sequence, lead_id, status="baseline",
+                                       reason="already in the view when the sequence was turned on")
+                    marked += 1
+            self.db.kv_set(start_key, iso(self.e.clock()))
+            self._event("seq_baseline", rule=sequence, detail=f"{marked} existing leads left alone")
+            log.info("[%s] first run: %s leads already in the view will not be texted", sequence, marked)
+            return 0
         enrolled = 0
         for lead_id in ids:
             if self.e.stopped():

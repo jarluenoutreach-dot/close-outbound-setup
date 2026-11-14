@@ -409,6 +409,10 @@ async def _seq_preview(args, settings) -> None:
             ids = await close.view_lead_ids(seq.view_id(sequence))
             print(f"\n=== {SEQUENCE_LABELS[sequence]} ({'ON' if seq.enabled(sequence) else 'OFF'}): "
                   f"{len(ids)} leads in the view ===")
+            if db.kv_get(f"seq_started:{sequence}") is None:
+                print(f"  First run: all {len(ids)} leads already in this view will be left alone (never texted).")
+                print("  Only leads that join the view after you turn it on get texts.")
+                continue
             counts: dict[str, int] = {}
             for lead_id in ids[: args.limit or None]:
                 rec = db.seq_get(sequence, lead_id)

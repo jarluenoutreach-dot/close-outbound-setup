@@ -38,6 +38,9 @@ def setup(tmp_path, start=MON_9AM, dry_run=False, **overrides):
     seq = SequenceRunner(engine)
     engine.sequences = seq
     close.views = {"v_n": set(), "v_p": set()}
+    # Tests start after go-live: the first-run baseline already happened (on an empty view).
+    engine.db.kv_set("seq_started:nurture", "test")
+    engine.db.kv_set("seq_started:prep", "test")
     return seq, close, clock
 
 
@@ -329,3 +332,20 @@ def test_no_name_renders_cleanly():
     assert render("intro", None).startswith("Hey, it's Jarluen")
     assert render("calendar", None).startswith("Want me to check")
     assert "{name}" not in "".join(render(k, None) for k in ("question", "slides", "slides_check", "breakup"))
+
+
+def test_first_run_leaves_existing_leads_alone(tmp_path):
+    seq, close, clock = setup(tmp_path)
+    seq.db.conn.execute("DELETE FROM kv")
+    nurture_lead(close, "lead_old")
+
+    async def go():
+        await seq.sweep(NURTURE)  # first run after turning it on
+        await tick_all(seq)
+        nurture_lead(close, "lead_new", phone="+13125550199")
+        await seq.sweep(NURTURE)
+        await tick_all(seq)
+    run(go())
+    assert seq.db.seq_get(NURTURE, "lead_old")["status"] == "baseline"
+    assert texts(close, "lead_old") == []
+    assert texts(close, "lead_new") == [render("intro", "Sam")]
