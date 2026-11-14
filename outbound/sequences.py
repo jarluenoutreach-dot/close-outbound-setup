@@ -26,12 +26,10 @@ SLIDES_URL = "https://gamma.app/docs/Diamond-Program-qm9r81lcp22mjbd?mode=doc"
 # ---- Messages: (with first name, without first name) ---------------------------
 MESSAGES: dict[str, tuple[str, str]] = {
     "intro": (
-        "Hey {name}, it's Jarluen from Daeron's team at Courier Business Academy. Great connecting with you! "
-        "The next step is a Strategy Session with one of our advisors to map out your game plan for the "
-        "courier business. Want me to send you a few times that work?",
-        "Hey, it's Jarluen from Daeron's team at Courier Business Academy. Great connecting with you! "
-        "The next step is a Strategy Session with one of our advisors to map out your game plan for the "
-        "courier business. Want me to send you a few times that work?",
+        "Hey {name}, it's Jarluen from Daeron's team. Great connecting! Next step is a quick Strategy "
+        "Session to map out your courier plan. Want a few times?",
+        "Hey, it's Jarluen from Daeron's team. Great connecting! Next step is a quick Strategy Session "
+        "to map out your courier plan. Want a few times?",
     ),
     "nudge": (
         "Hey {name}, just making sure you saw my text yesterday. Want me to send over a few times for your "
@@ -40,8 +38,8 @@ MESSAGES: dict[str, tuple[str, str]] = {
         "Strategy Session?",
     ),
     "fedex": (
-        "Thought you'd like this one. One of our students went from FedEx driver to $10k/month, and this "
-        "shows how: https://youtu.be/MhFYz5KjOBQ. Let me know what you think!",
+        "One of our students went from FedEx driver to $10k/month. Here's how: https://youtu.be/MhFYz5KjOBQ "
+        "Let me know what you think!",
     ) * 2,
     "question": (
         "Quick question, {name}: what's the #1 thing holding you back right now? Time, money, or not "
@@ -50,9 +48,8 @@ MESSAGES: dict[str, tuple[str, str]] = {
         "where to start?",
     ),
     "diamond": (
-        "Here's the full breakdown of our Diamond Program so you can see exactly how we help: "
-        "https://gamma.app/docs/Diamond-Program-qm9r81lcp22mjbd?mode=doc. We'd go through which path fits "
-        "you on the Strategy Session.",
+        "Here's our Diamond Program breakdown: https://gamma.app/docs/Diamond-Program-qm9r81lcp22mjbd?mode=doc "
+        "We'll find your path on your Strategy Session.",
     ) * 2,
     "daeron": (
         "This one's a must-watch. Daeron shows how he made $65k in 3 months subcontracting with just his "
