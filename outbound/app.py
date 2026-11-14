@@ -17,6 +17,7 @@ from .db import Db
 from .engine import Engine
 from .report import build_report
 from .security import verify_signature
+from .nudge import NudgeRunner
 from .seq_engine import SequenceRunner
 from .sequences import NURTURE, PREP
 from .telegram import Telegram
@@ -217,6 +218,7 @@ def create_app(settings: Settings, *, dry_run: bool = False) -> FastAPI:
         engine = Engine(settings, db, close, tg, dry_run=dry_run)
         seq = SequenceRunner(engine)
         engine.sequences = seq
+        nudge = NudgeRunner(engine)
         app.state.engine = engine
         if not settings.webhook_signature_key:
             log.error("CLOSE_WEBHOOK_SIGNATURE_KEY is not set: every webhook will be rejected. Run `outbound setup-webhook`.")
@@ -232,6 +234,7 @@ def create_app(settings: Settings, *, dry_run: bool = False) -> FastAPI:
             run_every("sequence-verify", 15, seq.verify_tick),
             run_every("timer", 15, lambda: timer_tick(engine)),
             run_every("reply-check", 60, engine.reply_tick, initial_delay=20),
+            run_every("webinar-nudge", 30, nudge.tick, initial_delay=25),
             telegram_loop(engine),
         ]
         tasks = [asyncio.create_task(loop) for loop in loops]
