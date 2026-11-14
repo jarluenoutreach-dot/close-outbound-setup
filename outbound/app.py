@@ -33,6 +33,8 @@ HELP = (
     "/resume – delete the STOP file\n"
     "/timer <duration> – pause and auto-resume later, e.g. /timer 1h30m or /timer 90m\n"
     "/timer cancel – clear a pending auto-resume (stays stopped)\n"
+    "/say <message> – after tapping 'Write my own' on a reply, sends your exact text to that lead\n"
+    "/pending – list replies that haven't been acted on yet\n"
     "/chatid – show this chat's ID"
 )
 
@@ -88,6 +90,10 @@ async def handle_command(engine: Engine, text: str) -> str:
         return await build_report(engine, engine.clock())
     if command == "/status":
         return engine.status_text()
+    if command == "/say":
+        return await engine.handle_custom_send(text)
+    if command == "/pending":
+        return await engine.pending_summary()
     if command == "/stop":
         engine.db.kv_set(TIMER_KV_KEY, "")
         stop_file.write_text("Created from Telegram /stop. Delete this file or send /resume to resume.\n")
@@ -164,6 +170,20 @@ async def telegram_loop(engine: Engine) -> None:
             for update in await tg.get_updates(offset):
                 offset = update["update_id"] + 1
                 engine.db.kv_set("telegram_offset", str(offset))
+                callback = update.get("callback_query")
+                if callback:
+                    cb_chat_id = str(((callback.get("message") or {}).get("chat") or {}).get("id", ""))
+                    if cb_chat_id != tg.chat_id:
+                        log.warning("Ignored Telegram button tap from unknown chat %s", cb_chat_id)
+                        await tg.answer_callback(callback["id"])
+                        continue
+                    result = await engine.handle_followup_button(callback.get("data") or "")
+                    await tg.answer_callback(callback["id"], result[:200])
+                    msg = callback.get("message") or {}
+                    original = msg.get("text") or ""
+                    await tg.edit_message_text(cb_chat_id, msg.get("message_id"), f"{original}\n\n✅ {result}")
+                    log.info("Telegram button handled: %s", result)
+                    continue
                 message = update.get("message") or update.get("edited_message") or {}
                 chat_id = str((message.get("chat") or {}).get("id", ""))
                 text = (message.get("text") or "").strip()
@@ -203,6 +223,7 @@ def create_app(settings: Settings, *, dry_run: bool = False) -> FastAPI:
             run_every("sweep", settings.sweep_interval_seconds, engine.sweep, initial_delay=20),
             run_every("weekly-report", 60, engine.weekly_tick),
             run_every("timer", 15, lambda: timer_tick(engine)),
+            run_every("reply-check", 60, engine.reply_tick, initial_delay=20),
             telegram_loop(engine),
         ]
         tasks = [asyncio.create_task(loop) for loop in loops]

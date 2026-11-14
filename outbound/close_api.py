@@ -306,7 +306,7 @@ class CloseClient:
         sms = (await self._request("GET", "/activity/sms/", params={"lead_id": lead_id, "_limit": 50})).get("data", [])
         return not any(w in (a.get("text") or "").upper().split() for a in sms for w in self._STOP_WORDS)
 
-    async def recent_candidate_ids_fast(self, lookback_minutes: int = 15, limit: int = 50) -> list[str]:
+    async def recent_candidate_ids_fast(self, lookback_minutes: int = 15, limit: int = 200) -> list[str]:
         import datetime
         since = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=lookback_minutes)
         body = {

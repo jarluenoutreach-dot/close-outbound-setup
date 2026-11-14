@@ -7,9 +7,13 @@ from datetime import datetime, timedelta
 
 from .close_api import CloseError
 from .eligibility import RULE_NAMES, activity_time, is_inbound_sms
+from .followup import STEP_ORDER
 from .messages import VERSIONS
 from .timeutil import iso, parse_dt
 from .timezones import CENTRAL
+
+STEP_LABELS = {"opener": "Texted (opener sent)", "msg2": "Reached Msg 2", "msg3": "Reached Msg 3",
+               "msg4": "Reached Msg 4", "done": "Reached a path (A/B/C)"}
 
 log = logging.getLogger("outbound.report")
 
@@ -39,12 +43,14 @@ async def build_report(engine, now: datetime, days: int = 7) -> str:
     since = now - timedelta(days=days)
     per = {v: Counter() for v in VERSIONS}
     unreadable = 0
+    funnel = Counter()
     for row in db.texted_since(iso(since)):
         version = row.get("message_version")
         sent_at = parse_dt(row.get("sent_at"))
         if version not in per or not sent_at:
             continue
         per[version]["sent"] += 1
+        funnel[row.get("followup_step") or "opener"] += 1
         try:
             outcome = await lead_outcome(close, row["lead_id"], sent_at)
         except CloseError as exc:
@@ -67,6 +73,13 @@ async def build_report(engine, now: datetime, days: int = 7) -> str:
             f"{label}: {c['sent']} sent · {c['replied']} replies ({_pct(c['replied'], c['sent'])}) · "
             f"{c['booked']} booked calls · {c['progressed']} → Qualified/Customer/Deposit"
         )
+    total_texted = sum(funnel.values())
+    if total_texted:
+        lines += ["", "Reply funnel (furthest step reached):"]
+        for i, step in enumerate(STEP_ORDER):
+            reached = sum(c for s, c in funnel.items() if STEP_ORDER.index(s) >= i)
+            lines.append(f"  {STEP_LABELS[step]}: {reached} ({_pct(reached, total_texted)})")
+
     lines += ["", f"Errors: {db.errors_since(iso(since))}"]
     skips = db.skip_counts_since(iso(since))
     if skips:

@@ -46,6 +46,41 @@ class Telegram:
                 ok = False
         return ok
 
+    async def send_with_buttons(self, text: str, buttons: list[tuple[str, str]], chat_id: str | None = None) -> bool:
+        """Send `text` with a row of inline buttons, each (label, callback_data)."""
+        target = chat_id or self.chat_id
+        if not (self.token and target):
+            log.info("Telegram not configured; message not sent:\n%s", text)
+            return False
+        keyboard = {"inline_keyboard": [[{"text": label, "callback_data": data} for label, data in buttons]]}
+        try:
+            resp = await self._http.post(
+                self._url("sendMessage"),
+                json={"chat_id": target, "text": text[:3900], "reply_markup": keyboard,
+                      "disable_web_page_preview": True},
+            )
+            if resp.status_code != 200:
+                log.error("Telegram sendMessage (buttons) failed: %s %s", resp.status_code, resp.text[:200])
+                return False
+            return True
+        except httpx.HTTPError as exc:
+            log.error("Telegram sendMessage (buttons) failed: %r", exc)
+            return False
+
+    async def answer_callback(self, callback_query_id: str, text: str = "") -> None:
+        try:
+            await self._http.post(self._url("answerCallbackQuery"),
+                                   json={"callback_query_id": callback_query_id, "text": text[:200]})
+        except httpx.HTTPError as exc:
+            log.warning("Telegram answerCallbackQuery failed: %r", exc)
+
+    async def edit_message_text(self, chat_id: str, message_id: int, text: str) -> None:
+        try:
+            await self._http.post(self._url("editMessageText"),
+                                   json={"chat_id": chat_id, "message_id": message_id, "text": text[:3900]})
+        except httpx.HTTPError as exc:
+            log.warning("Telegram editMessageText failed: %r", exc)
+
     async def get_updates(self, offset: int = 0, timeout: int = 50) -> list[dict]:
         if not self.token:
             return []

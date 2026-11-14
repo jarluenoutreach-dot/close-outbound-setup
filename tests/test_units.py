@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from outbound.eligibility import check_activities, precheck
+from outbound.followup import MSG_2, MSG_3, PATH_B, sync_step
 from outbound.messages import clean_first_name, render
 from outbound.security import sign, verify_signature
 from outbound.timeutil import parse_dt
@@ -149,6 +150,15 @@ def test_signature_verification():
     assert not verify_signature(key, body, None, ts)
     assert not verify_signature("", body, good, ts)
     assert not verify_signature(key, body, "0" * 64, ts, now=1700000010)
+
+
+# --------------------------------------------------------- followup sync
+def test_sync_step_catches_up_to_the_furthest_text_sent():
+    assert sync_step("opener", [MSG_3]) == "msg3"  # jumps ahead even skipping msg2
+    assert sync_step("msg3", [PATH_B]) == "done"
+    assert sync_step("msg4", [MSG_2]) == "msg4"  # never goes backward
+    assert sync_step("opener", ["something unrelated"]) == "opener"
+    assert sync_step("opener", []) == "opener"
 
 
 def test_parse_dt_formats():

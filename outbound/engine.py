@@ -6,8 +6,10 @@ mode every write is replaced by a log line.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
+import secrets
 from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -18,13 +20,17 @@ from .db import SETTLED_STATUSES, Db
 from .eligibility import (
     RULE_NAMES,
     Decision,
+    activity_time,
     base_decision,
     check_activities,
+    is_inbound_sms,
     lead_name,
     lead_phones,
     normalize_phone,
     precheck,
 )
+from .followup import STEPS as FOLLOWUP_STEPS
+from .followup import sync_step
 from .messages import PRIMARY_VERSIONS, VERSIONS, clean_first_name, render
 from .telegram import Telegram
 from .timeutil import iso, parse_dt, utcnow
@@ -61,6 +67,7 @@ class Engine:
         self._dirty: set[str] = set()
         self._tasks: set[asyncio.Task] = set()
         self._weekly_next_try: datetime | None = None
+        self._last_sweep_at: datetime | None = None
 
     # ------------------------------------------------------------------ utils
     def stopped(self) -> bool:
@@ -676,7 +683,24 @@ class Engine:
         if self.stopped():
             log.debug("STOP file present: sweep paused")
             return 0
-        ids = await self.close.recent_candidate_ids_fast()
+        now = self.clock()
+        # Catch up on anything that arrived during a pause (ours or Telegram's
+        # /stop, /timer — any source): _last_sweep_at only advances on a
+        # sweep that actually ran, so it naturally freezes for the whole
+        # pause and the gap below covers it on the first sweep after resume.
+        if self._last_sweep_at is None:
+            lookback_minutes = 15
+        else:
+            gap_minutes = (now - self._last_sweep_at).total_seconds() / 60
+            lookback_minutes = max(15, min(1440, int(gap_minutes) + 1))
+        if lookback_minutes > 15:
+            log.info("Sweep resuming after a %.0f-minute gap — widening lookback to catch anything missed",
+                     lookback_minutes)
+        ids = await self.close.recent_candidate_ids_fast(lookback_minutes=lookback_minutes)
+        if len(ids) >= 200:
+            log.warning("Sweep found >=200 candidates (Close's page limit) — some older leads from a long "
+                        "pause may be missed; consider a manual check")
+        self._last_sweep_at = now
         recheck = timedelta(minutes=self.s.recheck_skipped_minutes)
         checked = 0
         for lead_id in ids:
@@ -695,6 +719,214 @@ class Engine:
             checked += 1
         log.info("Sweep: %s leads in %s, %s checked", len(ids), self.s.smart_view_name, checked)
         return checked
+
+    # --------------------------------------------------------- reply buttons
+    # Nothing here writes any message text — it only notices a reply exists,
+    # forwards it to Telegram with buttons for the *human* to choose among,
+    # and sends whichever exact pre-written line (see followup.py) the human
+    # taps. No AI drafts or adapts anything.
+    async def reply_tick(self) -> int:
+        if not self.telegram.enabled:
+            return 0
+        since = iso(self.clock() - timedelta(days=14))
+        rows = self.db.conn.execute(
+            "SELECT lead_id FROM leads WHERE status = 'sent' AND (followup_step IS NULL OR followup_step != 'done') "
+            "AND sent_at IS NOT NULL AND sent_at > ?",
+            (since,),
+        ).fetchall()
+        notified = 0
+        for row in rows:
+            # Deliberately not gated on self.stopped(): /stop only pauses new
+            # first-touch outbound texts. Replies on leads already texted
+            # should keep flowing to Telegram so the human can keep working
+            # those conversations through the buttons regardless.
+            lead_id = row["lead_id"]
+            rec = self.db.get(lead_id)
+            if not rec:
+                continue
+            try:
+                sms = await self.close.list_activities("sms", lead_id)
+            except CloseError as exc:
+                log.warning("reply_tick: could not read SMS for %s: %s", lead_id, exc)
+                continue
+            # Other teammates text the same leads from their own numbers. Only
+            # look at our own conversation thread (our dedicated local_phone),
+            # so a reply to someone else's text never gets mistaken for one
+            # replying to us.
+            sms = [s for s in sms if s.get("local_phone") == self.s.local_phone]
+            inbound = [s for s in sms if is_inbound_sms(s)]
+            if not inbound:
+                continue
+            latest = max(inbound, key=lambda s: activity_time(s) or self.clock())
+            if latest.get("id") == rec.get("followup_notified_sms_id"):
+                continue  # already notified about this exact reply
+
+            # Catch up followup_step if a human already sent a later script
+            # line directly in Close, bypassing the buttons — otherwise
+            # we'd keep offering a step the conversation has already passed.
+            outbound_texts = [s.get("text") or "" for s in sms if not is_inbound_sms(s)]
+            synced_step = sync_step(rec.get("followup_step") or "opener", outbound_texts)
+            if synced_step != (rec.get("followup_step") or "opener"):
+                self.db.upsert(lead_id, followup_step=synced_step)
+                rec = self.db.get(lead_id)
+            step = rec.get("followup_step") or "opener"
+            options = FOLLOWUP_STEPS.get(step)
+
+            reply_text = (latest.get("text") or "").strip()
+            header = f"💬 {rec.get('lead_name') or lead_id} ({rec.get('phone') or ''}) replied:\n\"{reply_text}\""
+            if not options:
+                header += "\n\n(No more scripted steps for this lead.)"
+            batch_id = secrets.token_urlsafe(4)
+            buttons = []
+            for label, next_step, send_text in options or []:
+                token = secrets.token_urlsafe(6)
+                self.db.kv_set(f"cb_{token}", json.dumps(
+                    {"lead_id": lead_id, "batch_id": batch_id, "from_step": step,
+                     "next_step": next_step, "text": send_text}))
+                buttons.append((label, token))
+            custom_token = secrets.token_urlsafe(6)
+            self.db.kv_set(f"cb_{custom_token}", json.dumps(
+                {"lead_id": lead_id, "batch_id": batch_id, "custom": True}))
+            buttons.append(("✏️ Write my own", custom_token))
+            dismiss_token = secrets.token_urlsafe(6)
+            self.db.kv_set(f"cb_{dismiss_token}", json.dumps(
+                {"lead_id": lead_id, "dismiss": True, "sms_id": latest.get("id")}))
+            buttons.append(("🚫 No action needed", dismiss_token))
+            await self.telegram.send_with_buttons(header, buttons)
+            self.db.upsert(lead_id, followup_notified_sms_id=latest.get("id"))
+            notified += 1
+        return notified
+
+    async def handle_followup_button(self, token: str) -> str:
+        """A human tapped a Telegram button. Buttons either send the exact
+        pre-written text for that choice (never anything generated or
+        adapted), or — for "Write my own" — queue the lead so the next
+        /say <message> the human types is relayed verbatim to that lead.
+
+        Any button from the same notification (same batch_id) stays usable
+        after another one in that batch was already tapped, so a wrong tap
+        can be corrected — but a text that already went out can't be
+        unsent, so a correction is flagged as sending an extra message.
+        """
+        raw = self.db.kv_get(f"cb_{token}")
+        if not raw:
+            return "This button already expired or was used."
+        self.db.kv_set(f"cb_{token}", "")
+        payload = json.loads(raw)
+        lead_id = payload["lead_id"]
+        rec = self.db.get(lead_id)
+        if not rec:
+            return "Couldn't find that lead anymore."
+
+        if payload.get("dismiss"):
+            self.db.upsert(lead_id, followup_dismissed_sms_id=payload.get("sms_id") or rec.get("followup_notified_sms_id"))
+            return f"🚫 Marked as no action needed for {rec.get('lead_name')}."
+
+        if payload.get("custom"):
+            note = ""
+            existing_raw = self.db.kv_get("pending_custom_lead")
+            if existing_raw:
+                existing_lead_id = json.loads(existing_raw).get("lead_id")
+                if existing_lead_id and existing_lead_id != lead_id:
+                    old_rec = self.db.get(existing_lead_id)
+                    old_name = old_rec.get("lead_name") if old_rec else existing_lead_id
+                    note = f"\n(note: replaced a still-pending custom message for {old_name} that was never sent)"
+            self.db.kv_set("pending_custom_lead", json.dumps({"lead_id": lead_id}))
+            return (f"✏️ Reply with: /say <your message> — it'll be sent to "
+                    f"{rec.get('lead_name')} ({rec.get('phone')}).{note}")
+
+        batch_id, from_step, next_step, text = (
+            payload.get("batch_id"), payload["from_step"], payload["next_step"], payload["text"])
+        current_step = rec.get("followup_step") or "opener"
+        is_first_use = current_step == from_step
+        is_correction = bool(batch_id) and rec.get("followup_last_batch_id") == batch_id
+        if not (is_first_use or is_correction):
+            return "This button already expired — a newer reply has since moved this lead forward."
+        if self.dry_run:
+            self.db.upsert(lead_id, followup_step=next_step, followup_last_batch_id=batch_id or "")
+            prefix = "[DRY RUN] Changed to" if is_correction else "[DRY RUN] Would send to"
+            return f"{prefix} {rec.get('lead_name')}: {text}"
+        try:
+            sms = await self.close.create_sms({
+                "lead_id": lead_id, "contact_id": rec.get("contact_id"), "local_phone": self.s.local_phone,
+                "remote_phone": rec.get("phone"), "text": text, "status": "outbox",
+            })
+        except CloseError as exc:
+            return f"Failed to send: {exc}"
+        self.db.upsert(lead_id, followup_step=next_step, followup_last_batch_id=batch_id or "")
+        self._event("followup_sent", lead_id, detail=f"step={next_step} sms={sms.get('id')}")
+        if is_correction:
+            return f"↩️ Changed to — sent to {rec.get('lead_name')}: {text}\n(note: an earlier choice for this same reply already went out and can't be unsent)"
+        return f"Sent to {rec.get('lead_name')}: {text}"
+
+    async def handle_custom_send(self, command_text: str) -> str:
+        """/say <message> — relays the human's own typed text verbatim to
+        whichever lead they most recently tapped "Write my own" for."""
+        parts = command_text.split(maxsplit=1)
+        body = parts[1].strip() if len(parts) > 1 else ""
+        if not body:
+            return "Usage: /say <message> — sends to whichever lead you tapped 'Write my own' for."
+        raw = self.db.kv_get("pending_custom_lead")
+        if not raw:
+            return "No pending custom message. Tap '✏️ Write my own' on a reply notification first."
+        self.db.kv_set("pending_custom_lead", "")
+        lead_id = json.loads(raw)["lead_id"]
+        rec = self.db.get(lead_id)
+        if not rec:
+            return "Couldn't find that lead anymore."
+        if self.dry_run:
+            return f"[DRY RUN] Would send to {rec.get('lead_name')}: {body}"
+        try:
+            sms = await self.close.create_sms({
+                "lead_id": lead_id, "contact_id": rec.get("contact_id"), "local_phone": self.s.local_phone,
+                "remote_phone": rec.get("phone"), "text": body, "status": "outbox",
+            })
+        except CloseError as exc:
+            return f"Failed to send: {exc}"
+        self._event("followup_sent", lead_id, detail=f"custom sms={sms.get('id')}")
+        return f"Sent to {rec.get('lead_name')}: {body}"
+
+    async def pending_summary(self) -> str:
+        """/pending — leads whose latest reply hasn't been acted on yet
+        (no button tap, no custom send, no dismiss) regardless of whether
+        a Telegram notification already went out for it."""
+        since = iso(self.clock() - timedelta(days=14))
+        rows = self.db.conn.execute(
+            "SELECT lead_id FROM leads WHERE status = 'sent' AND (followup_step IS NULL OR followup_step != 'done') "
+            "AND sent_at IS NOT NULL AND sent_at > ?",
+            (since,),
+        ).fetchall()
+        pending = []
+        for row in rows:
+            lead_id = row["lead_id"]
+            rec = self.db.get(lead_id)
+            if not rec:
+                continue
+            try:
+                sms = await self.close.list_activities("sms", lead_id)
+            except CloseError:
+                continue
+            sms = [s for s in sms if s.get("local_phone") == self.s.local_phone]
+            inbound = [s for s in sms if is_inbound_sms(s)]
+            if not inbound:
+                continue
+            latest_in = max(inbound, key=lambda s: activity_time(s) or self.clock())
+            if latest_in.get("id") == rec.get("followup_dismissed_sms_id"):
+                continue  # explicitly marked no-action-needed
+            outbound_times = [activity_time(s) for s in sms if not is_inbound_sms(s)]
+            outbound_times = [t for t in outbound_times if t]
+            latest_out_time = max(outbound_times, default=None)
+            in_time = activity_time(latest_in)
+            if latest_out_time and in_time and latest_out_time >= in_time:
+                continue  # already responded (button, custom, or manual) since this reply
+            pending.append((rec, latest_in))
+        if not pending:
+            return "✅ Nothing pending — every reply has been acted on."
+        lines = [f"⏳ {len(pending)} pending repl{'y' if len(pending) == 1 else 'ies'}:"]
+        for rec, sms in pending:
+            text = (sms.get("text") or "").strip()
+            lines.append(f"• {rec.get('lead_name')} ({rec.get('phone')}): \"{text[:80]}\"")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------- reporting
     async def weekly_tick(self) -> None:

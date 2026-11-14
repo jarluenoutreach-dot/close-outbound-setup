@@ -42,6 +42,10 @@ LEAD_COLUMNS = {
     "sent_at": "TEXT",
     "error_at": "TEXT",
     "tried_versions": "TEXT",  # comma-separated template versions already attempted for this lead
+    "followup_step": "TEXT",  # where they are in the human-tapped follow-up sequence (see followup.py)
+    "followup_notified_sms_id": "TEXT",  # last inbound reply we've already Telegram-notified about
+    "followup_last_batch_id": "TEXT",  # notification batch of the last button tap, so a different button in the same notification can still correct it
+    "followup_dismissed_sms_id": "TEXT",  # inbound reply id explicitly marked "no action needed"
 }
 
 SCHEMA = (
