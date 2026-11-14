@@ -25,6 +25,8 @@ class FakeClose:
         self.fail_create_sms: str | None = None
         self.calls = 0
         self._ids = itertools.count(1)
+        self.opps: dict[str, list[dict]] = {}
+        self.views: dict[str, set[str]] = {}
 
     # helpers for tests
     def add_lead(self, lead_id, name="Sam Smith", phone="+13125550100", status="Potential", in_view=True, contact_name=None):
@@ -53,11 +55,24 @@ class FakeClose:
         self.calls += 1
         return list(self.activities.get((kind, lead_id), []))
 
+    async def get_lead_full(self, lead_id):
+        self.calls += 1
+        return self.leads.get(lead_id)
+
+    async def list_opportunities(self, lead_id):
+        return list(self.opps.get(lead_id, []))
+
+    def add_opp(self, lead_id, status_id, user_id=ME):
+        self.opps.setdefault(lead_id, []).append({"id": f"oppo_{next(self._ids)}", "lead_id": lead_id,
+                                                  "status_id": status_id, "user_id": user_id})
+
     async def lead_in_view(self, view_id, lead_id):
         self.calls += 1
         return lead_id in self.view
 
     async def view_lead_ids(self, view_id):
+        if view_id in self.views:
+            return sorted(self.views[view_id])
         return sorted(self.view)
 
     async def find_lead_ids_by_phone(self, phone):

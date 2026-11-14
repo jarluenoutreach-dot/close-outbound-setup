@@ -61,10 +61,40 @@ SCHEMA = (
     );
     CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
     CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT);
+    CREATE TABLE IF NOT EXISTS seq_runs (
+        sequence TEXT NOT NULL,          -- nurture | prep
+        lead_id TEXT NOT NULL,
+        variant TEXT,                    -- nurture | prep_long | prep_short
+        status TEXT NOT NULL,            -- waiting | active | done | stopped | skipped | error | baseline
+        lead_name TEXT,
+        contact_id TEXT,
+        phone TEXT,
+        first_name TEXT,
+        lead_status TEXT,                -- lead status when enrolled (a change stops the run)
+        meeting_at TEXT,                 -- prep: start of the Strategy Session
+        step INTEGER DEFAULT 0,          -- index of the next step to send
+        due_at TEXT,                     -- when the next step may go out
+        enrolled_at TEXT NOT NULL,
+        last_sent_at TEXT,
+        last_sms_id TEXT,
+        verify_after TEXT,
+        attempts INTEGER DEFAULT 0,
+        reason TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (sequence, lead_id)
+    );
+    CREATE INDEX IF NOT EXISTS seq_runs_status ON seq_runs(status, due_at);
     """
 )
 
-SEND_EVENTS = ("sent", "send_failed")
+SEQ_COLUMNS = {
+    "variant", "status", "lead_name", "contact_id", "phone", "first_name", "lead_status", "meeting_at",
+    "step", "due_at", "enrolled_at", "last_sent_at", "last_sms_id", "verify_after", "attempts", "reason",
+}
+
+# Every text the service sends counts toward the shared 15s gap / hourly cap, first texts and
+# sequence texts alike.
+SEND_EVENTS = ("sent", "send_failed", "seq_sent", "seq_send_failed")
 
 
 class Db:
@@ -214,6 +244,62 @@ class Db:
             "SELECT * FROM events WHERE event = ? ORDER BY id DESC LIMIT 1", (event,)
         ).fetchone()
         return dict(row) if row else None
+
+    # ---- sequence runs -----------------------------------------------------
+    def seq_get(self, sequence: str, lead_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM seq_runs WHERE sequence = ? AND lead_id = ?", (sequence, lead_id)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def seq_upsert(self, sequence: str, lead_id: str, **fields) -> None:
+        unknown = set(fields) - SEQ_COLUMNS
+        if unknown:
+            raise ValueError(f"unknown columns: {sorted(unknown)}")
+        now = iso(utcnow())
+        fields["updated_at"] = now
+        with self._lock:
+            if self.seq_get(sequence, lead_id):
+                assignments = ", ".join(f"{k} = ?" for k in fields)
+                self.conn.execute(
+                    f"UPDATE seq_runs SET {assignments} WHERE sequence = ? AND lead_id = ?",
+                    (*fields.values(), sequence, lead_id),
+                )
+            else:
+                fields.setdefault("status", "active")
+                fields.setdefault("enrolled_at", now)
+                cols = ["sequence", "lead_id", *fields]
+                marks = ", ".join("?" for _ in cols)
+                self.conn.execute(
+                    f"INSERT INTO seq_runs ({', '.join(cols)}) VALUES ({marks})", (sequence, lead_id, *fields.values())
+                )
+
+    def seq_rows(self, *, sequence: str | None = None, statuses: tuple[str, ...] | None = None) -> list[dict]:
+        sql, args = "SELECT * FROM seq_runs WHERE 1=1", []
+        if sequence:
+            sql += " AND sequence = ?"
+            args.append(sequence)
+        if statuses:
+            sql += f" AND status IN ({', '.join('?' for _ in statuses)})"
+            args.extend(statuses)
+        return [dict(r) for r in self.conn.execute(sql + " ORDER BY due_at, enrolled_at", args)]
+
+    def seq_due(self, now: str) -> list[dict]:
+        cur = self.conn.execute(
+            "SELECT * FROM seq_runs WHERE status IN ('active', 'waiting') AND due_at <= ? ORDER BY due_at", (now,)
+        )
+        return [dict(r) for r in cur]
+
+    def seq_to_verify(self, now: str) -> list[dict]:
+        cur = self.conn.execute(
+            "SELECT * FROM seq_runs WHERE last_sms_id IS NOT NULL AND verify_after IS NOT NULL AND verify_after <= ?",
+            (now,),
+        )
+        return [dict(r) for r in cur]
+
+    def seq_counts(self) -> dict[tuple[str, str], int]:
+        cur = self.conn.execute("SELECT sequence, status, COUNT(*) FROM seq_runs GROUP BY sequence, status")
+        return {(r[0], r[1]): r[2] for r in cur}
 
     # ---- key/value ---------------------------------------------------------
     def kv_get(self, key: str) -> str | None:

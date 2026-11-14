@@ -15,6 +15,8 @@ DEFAULT_MY_USER_ID = "user_9LGnQqtaen7jdlZ3P10lTbiVcjELWdhZw52QHGCQF2w"
 DEFAULT_SMART_VIEW_ID = "save_qXqdB9NfSbAyAEkNxorj51QmKP1jMEAa9Vo9petBUmU"
 DEFAULT_LOCAL_PHONE = "+19786669462"
 
+from .sequences import DEFAULT_NURTURE_VIEW_ID, DEFAULT_PREP_VIEW_ID  # noqa: E402
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -54,6 +56,20 @@ class Settings:
 
     # Test mode: when set, only leads with one of these phones are processed at all.
     test_phones: tuple[str, ...] = ()
+
+    # Follow-up sequences (outbound/sequences.py). Both are OFF until turned on in .env.
+    nurture_enabled: bool = False
+    prep_enabled: bool = False
+    nurture_view_id: str = DEFAULT_NURTURE_VIEW_ID
+    prep_view_id: str = DEFAULT_PREP_VIEW_ID
+    seq_timezone: str = "America/Chicago"
+    seq_window_start_hour: int = 9
+    seq_window_end_hour: int = 18
+    seq_window_days: tuple[int, ...] = (0, 1, 2, 3, 4, 5)  # Monday=0 ... Saturday=5
+    seq_sweep_interval_seconds: int = 300
+    prep_long_hours: int = 48              # meeting this far out or more: slides + check-in
+    prep_followup_hours_before: int = 3    # never send the check-in closer than this to the call
+    prep_meeting_wait_minutes: int = 30    # wait this long for the meeting to show up in Close
 
     project_dir: Path = PROJECT_DIR
 
@@ -96,6 +112,23 @@ def _float(name: str, default: float) -> float:
     return float(raw) if raw else default
 
 
+def _bool(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
+_DAY_NAMES = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+
+def _days(name: str, default: tuple[int, ...]) -> tuple[int, ...]:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    return tuple(sorted({_DAY_NAMES[d.strip()[:3]] for d in raw.split(",") if d.strip()}))
+
+
 def _phones(name: str) -> tuple[str, ...]:
     from .eligibility import normalize_phone
 
@@ -131,6 +164,18 @@ def load_settings(env_file: Path = ENV_FILE) -> Settings:
         error_stop_threshold=_int("ERROR_STOP_THRESHOLD", 3),
         morning_check_minutes_before=_int("MORNING_CHECK_MINUTES_BEFORE", 5),
         test_phones=_phones("TEST_PHONES"),
+        nurture_enabled=_bool("NURTURE_ENABLED"),
+        prep_enabled=_bool("PREP_ENABLED"),
+        nurture_view_id=_str("NURTURE_VIEW_ID", DEFAULT_NURTURE_VIEW_ID),
+        prep_view_id=_str("PREP_VIEW_ID", DEFAULT_PREP_VIEW_ID),
+        seq_timezone=_str("SEQ_TIMEZONE", "America/Chicago"),
+        seq_window_start_hour=_int("SEQ_WINDOW_START_HOUR", 9),
+        seq_window_end_hour=_int("SEQ_WINDOW_END_HOUR", 18),
+        seq_window_days=_days("SEQ_WINDOW_DAYS", (0, 1, 2, 3, 4, 5)),
+        seq_sweep_interval_seconds=_int("SEQ_SWEEP_INTERVAL_SECONDS", 300),
+        prep_long_hours=_int("PREP_LONG_HOURS", 48),
+        prep_followup_hours_before=_int("PREP_FOLLOWUP_HOURS_BEFORE", 3),
+        prep_meeting_wait_minutes=_int("PREP_MEETING_WAIT_MINUTES", 30),
         project_dir=env_file.resolve().parent,
     )
 
