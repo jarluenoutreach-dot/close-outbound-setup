@@ -38,9 +38,12 @@ def zone_label(zones: list[ZoneInfo]) -> str:
     return "/".join(z.key for z in zones)
 
 
-def in_send_window(now: datetime, zones: list[ZoneInfo], start_hour: int = 8, end_hour: int = 20) -> bool:
-    """True when it is between start and end hour in every zone the number could be in."""
-    return all(start_hour <= now.astimezone(z).hour < end_hour for z in zones)
+def in_send_window(now: datetime, zones: list[ZoneInfo], start_hour: int = 8, end_hour: int = 20,
+                    end_minute: int = 0) -> bool:
+    """True when it is between start and end time (end_hour:end_minute) in every zone the number could be in."""
+    start_minutes = start_hour * 60
+    end_minutes = end_hour * 60 + end_minute
+    return all(start_minutes <= now.astimezone(z).hour * 60 + now.astimezone(z).minute < end_minutes for z in zones)
 
 
 def anchor_zone(now: datetime, zones: list[ZoneInfo]) -> ZoneInfo:

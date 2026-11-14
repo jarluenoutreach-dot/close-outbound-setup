@@ -1,8 +1,19 @@
-"""The three first-text versions."""
+"""The first-text versions."""
 from __future__ import annotations
 
-VERSIONS = (1, 2, 3)
+# Version 3 is defined below but dropped from rotation for now — it failed
+# carrier content filtering consistently (6 for 6) while 1 and 2 stayed clean.
+VERSIONS = (1, 2)
+# New sends only ever start on PRIMARY_VERSIONS. Version 1 (the exact
+# qualifying script) got flagged ~79% of the time (22 of 28) once live, while
+# version 2 (same question, different wording) passed 12/12 — so new leads
+# lead with 2, and 1 is now fallback-only: still tried automatically if 2
+# somehow gets flagged too, just never the first attempt.
+PRIMARY_VERSIONS = (2,)
 
+# Question 1 of the real outbound qualifying script (no webinar follow-up —
+# straight into qualifying, per how this actually runs). Version 1 is the
+# script verbatim; version 2 says the same thing differently.
 # (greeting, body). With a first name: "Hey Sam! <body>". Without: "Hey! <body>".
 TEMPLATES = {
     1: (
@@ -12,15 +23,9 @@ TEMPLATES = {
         "have a courier business you want to scale?",
     ),
     2: (
-        "Hey",
-        "This is Jarluen, one of the advisors on Daeron Myers' team. I saw you opted in for the courier "
-        "business. Are you looking to start your courier business, or do you already have one you want "
-        "to scale?",
-    ),
-    3: (
         "Hi",
-        "Jarluen here, I'm an advisor on Daeron Myers' team. Noticed you opted in about the courier "
-        "business. Are you wanting to start one from scratch, or grow a courier business you already have?",
+        "Jarluen here, advisor on Daeron Myers' team. You opted in about the courier business recently "
+        "- curious if you're starting from scratch, or already running one you'd like to grow?",
     ),
 }
 

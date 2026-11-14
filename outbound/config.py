@@ -42,6 +42,7 @@ class Settings:
     # Sending
     send_window_start_hour: int = 8
     send_window_end_hour: int = 20
+    send_window_end_minute: int = 0
     min_seconds_between_sends: int = 15
     max_sends_per_hour: int = 60
     schedule_spacing_seconds: int = 15
@@ -57,9 +58,9 @@ class Settings:
     # Test mode: when set, only leads with one of these phones are processed at all.
     test_phones: tuple[str, ...] = ()
 
-    # Follow-up sequences (outbound/sequences.py). Both are OFF until turned on in .env.
-    nurture_enabled: bool = False
-    prep_enabled: bool = False
+    # Follow-up sequences (outbound/sequences.py). Both ON unless turned off in .env.
+    nurture_enabled: bool = True
+    prep_enabled: bool = True
     nurture_view_id: str = DEFAULT_NURTURE_VIEW_ID
     prep_view_id: str = DEFAULT_PREP_VIEW_ID
     seq_timezone: str = "America/Chicago"
@@ -154,6 +155,7 @@ def load_settings(env_file: Path = ENV_FILE) -> Settings:
         long_call_seconds=_int("LONG_CALL_SECONDS", 120),
         send_window_start_hour=_int("SEND_WINDOW_START_HOUR", 8),
         send_window_end_hour=_int("SEND_WINDOW_END_HOUR", 20),
+        send_window_end_minute=_int("SEND_WINDOW_END_MINUTE", 0),
         min_seconds_between_sends=_int("MIN_SECONDS_BETWEEN_SENDS", 15),
         max_sends_per_hour=_int("MAX_SENDS_PER_HOUR", 60),
         schedule_spacing_seconds=_int("SCHEDULE_SPACING_SECONDS", 15),
@@ -164,8 +166,8 @@ def load_settings(env_file: Path = ENV_FILE) -> Settings:
         error_stop_threshold=_int("ERROR_STOP_THRESHOLD", 3),
         morning_check_minutes_before=_int("MORNING_CHECK_MINUTES_BEFORE", 5),
         test_phones=_phones("TEST_PHONES"),
-        nurture_enabled=_bool("NURTURE_ENABLED"),
-        prep_enabled=_bool("PREP_ENABLED"),
+        nurture_enabled=_bool("NURTURE_ENABLED", True),
+        prep_enabled=_bool("PREP_ENABLED", True),
         nurture_view_id=_str("NURTURE_VIEW_ID", DEFAULT_NURTURE_VIEW_ID),
         prep_view_id=_str("PREP_VIEW_ID", DEFAULT_PREP_VIEW_ID),
         seq_timezone=_str("SEQ_TIMEZONE", "America/Chicago"),
