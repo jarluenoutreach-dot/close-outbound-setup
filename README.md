@@ -46,6 +46,22 @@ The text goes to the first contact that has a phone. The time zone comes from th
 
 ---
 
+## Webinar no-reply nudge
+
+24 hours after a first text goes out, a lead who hasn't answered gets **one** nudge from the same number, 8am–8pm in the lead's time zone:
+
+> Hey {name}, just following up on my text yesterday. Are you looking to start a courier business from scratch, or grow one you already run?
+
+**No nudge, ever, if the lead has replied to anyone on the team before:** any inbound text or inbound call from the lead, to any number, at any time. A phone conversation of 2+ minutes with anyone also counts. It's also skipped when:
+- another setter texted the lead after your first text
+- the lead has a meeting
+- the lead has a blocked status
+- the first text failed
+
+Only first texts sent after the nudge went live are nudged; older leads are left alone. It adds a note on the lead, obeys the STOP file and `/timer`, and shares the send pacing. Turn it off with `NUDGE_ENABLED=false` in `.env`; change the delay with `NUDGE_AFTER_HOURS`. The wording is in `outbound/nudge.py`.
+
+---
+
 ## Follow-up sequences (nurture + SS prep)
 
 The same service also runs two follow-up sequences. They replace Close workflows: nothing is set up in Close except two **private** smart views, and every text goes out from **+1 978-666-9462** as you (the API key's owner). Both are **on** by default; set `NURTURE_ENABLED=false` or `PREP_ENABLED=false` in `.env` to turn one off.

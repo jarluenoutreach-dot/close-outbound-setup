@@ -46,6 +46,10 @@ LEAD_COLUMNS = {
     "followup_notified_sms_id": "TEXT",  # last inbound reply we've already Telegram-notified about
     "followup_last_batch_id": "TEXT",  # notification batch of the last button tap, so a different button in the same notification can still correct it
     "followup_dismissed_sms_id": "TEXT",  # inbound reply id explicitly marked "no action needed"
+    "nudge_status": "TEXT",  # webinar no-reply nudge: sent | skipped | error (NULL = not handled yet)
+    "nudge_reason": "TEXT",
+    "nudge_sent_at": "TEXT",
+    "nudge_sms_id": "TEXT",
 }
 
 SCHEMA = (
@@ -99,7 +103,7 @@ SEQ_COLUMNS = {
 
 # Every text the service sends counts toward the shared 15s gap / hourly cap, first texts and
 # sequence texts alike.
-SEND_EVENTS = ("sent", "send_failed", "seq_sent", "seq_send_failed")
+SEND_EVENTS = ("sent", "send_failed", "seq_sent", "seq_send_failed", "nudge_sent", "nudge_send_failed")
 
 
 class Db:

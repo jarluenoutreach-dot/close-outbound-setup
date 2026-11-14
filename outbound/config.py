@@ -58,6 +58,10 @@ class Settings:
     # Test mode: when set, only leads with one of these phones are processed at all.
     test_phones: tuple[str, ...] = ()
 
+    # Webinar no-reply nudge (outbound/nudge.py)
+    nudge_enabled: bool = True
+    nudge_after_hours: int = 24
+
     # Follow-up sequences (outbound/sequences.py). Both ON unless turned off in .env.
     nurture_enabled: bool = True
     prep_enabled: bool = True
@@ -166,6 +170,8 @@ def load_settings(env_file: Path = ENV_FILE) -> Settings:
         error_stop_threshold=_int("ERROR_STOP_THRESHOLD", 3),
         morning_check_minutes_before=_int("MORNING_CHECK_MINUTES_BEFORE", 5),
         test_phones=_phones("TEST_PHONES"),
+        nudge_enabled=_bool("NUDGE_ENABLED", True),
+        nudge_after_hours=_int("NUDGE_AFTER_HOURS", 24),
         nurture_enabled=_bool("NURTURE_ENABLED", True),
         prep_enabled=_bool("PREP_ENABLED", True),
         nurture_view_id=_str("NURTURE_VIEW_ID", DEFAULT_NURTURE_VIEW_ID),
