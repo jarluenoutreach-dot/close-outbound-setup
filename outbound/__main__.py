@@ -387,6 +387,111 @@ def cmd_status(args, settings) -> None:
         print(f"  error {r.get('error_at')}: {r.get('lead_name')} {r.get('phone')}: {r.get('error_message')}")
 
 
+# ---------------------------------------------------------------- sequences
+def _seq_names(which: str) -> list[str]:
+    from .sequences import NURTURE, PREP
+
+    return {"nurture": [NURTURE], "prep": [PREP], "all": [NURTURE, PREP]}[which]
+
+
+async def _seq_preview(args, settings) -> None:
+    """Who is in each view now and what the service would do. Writes nothing to Close or the database."""
+    from .seq_engine import SequenceRunner
+    from .sequences import SEQUENCE_LABELS, VARIANT_STEPS, render
+
+    close = _need_close(settings)
+    db = Db.snapshot(settings.db_path)
+    engine = Engine(settings, db, close, dry_run=True, ignore_stop=True)
+    seq = SequenceRunner(engine)
+    now = engine.clock()
+    try:
+        for sequence in _seq_names(args.which):
+            ids = await close.view_lead_ids(seq.view_id(sequence))
+            print(f"\n=== {SEQUENCE_LABELS[sequence]} ({'ON' if seq.enabled(sequence) else 'OFF'}): "
+                  f"{len(ids)} leads in the view ===")
+            counts: dict[str, int] = {}
+            for lead_id in ids[: args.limit or None]:
+                rec = db.seq_get(sequence, lead_id)
+                if rec:
+                    line = f"already {rec['status']}" + (f" ({rec['reason']})" if rec.get("reason") else "")
+                    counts["already handled"] = counts.get("already handled", 0) + 1
+                    print(f"  {rec.get('lead_name') or lead_id}: {line}")
+                    continue
+                plan = await seq.evaluate(sequence, lead_id)
+                action = plan["action"]
+                counts[action] = counts.get(action, 0) + 1
+                name = plan.get("lead_name") or lead_id
+                if action == "enroll":
+                    steps = VARIANT_STEPS[plan["variant"]]
+                    when = seq.next_open(now)
+                    meeting = f", meeting {seq._local(plan['meeting_at'])}" if plan.get("meeting_at") else ""
+                    print(f"  {name} {plan['phone']}: ENROLL {plan['variant']} ({len(steps)} texts{meeting}); "
+                          f"text 1 {'now' if when == now else seq._local(when)}:")
+                    print(f"      \"{render(steps[0].message, plan.get('first_name'))}\"")
+                else:
+                    print(f"  {name}: {action.upper()} - {plan.get('reason')}")
+            print("  Summary: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    finally:
+        await close.aclose()
+    print("\nNothing was sent or saved. Send window: "
+          f"{settings.seq_window_start_hour}:00-{settings.seq_window_end_hour}:00 {settings.seq_timezone}, "
+          f"days {','.join(str(d) for d in settings.seq_window_days)} (0=Mon).")
+
+
+def cmd_seq_status(args, settings) -> None:
+    from .seq_engine import SequenceRunner
+    from .sequences import VARIANT_STEPS
+
+    db = Db(settings.db_path)
+    engine = Engine(settings, db, close=None)  # type: ignore[arg-type]
+    seq = SequenceRunner(engine)
+    print("\n".join(seq.status_lines()))
+    for rec in db.seq_rows(statuses=("active", "waiting", "error")):
+        steps = VARIANT_STEPS.get(rec.get("variant") or "", ())
+        due = seq._local(parse_dt(rec.get("due_at"))) if rec.get("due_at") else "-"
+        print(f"  [{rec['sequence']}] {rec['status']:7} {rec.get('lead_name')} {rec.get('phone')} "
+              f"sent {rec['step']}/{len(steps) or '?'} next {due} {rec.get('reason') or ''}")
+
+
+async def _seq_baseline(args, settings) -> None:
+    from .seq_engine import SequenceRunner
+
+    db = Db(settings.db_path)
+    if args.undo:
+        for sequence in _seq_names(args.which):
+            n = db.conn.execute("DELETE FROM seq_runs WHERE sequence = ? AND status = 'baseline'", (sequence,)).rowcount
+            print(f"{sequence}: removed the baseline mark from {n} leads.")
+        return
+    if not args.yes:
+        sys.exit("This marks every lead currently in the view(s) as 'leave alone' so only leads that join later "
+                 "get texts. Re-run with --yes to do it.")
+    close = _need_close(settings)
+    try:
+        seq = SequenceRunner(Engine(settings, db, close))
+        for sequence in _seq_names(args.which):
+            print(f"{sequence}: marked {await seq.baseline(sequence)} leads as baseline.")
+    finally:
+        await close.aclose()
+
+
+def cmd_seq_stop(args, settings) -> None:
+    db = Db(settings.db_path)
+    stopped = 0
+    for sequence in _seq_names(args.which):
+        rec = db.seq_get(sequence, args.lead_id)
+        if rec and rec["status"] in ("active", "waiting"):
+            db.seq_upsert(sequence, args.lead_id, status="stopped", due_at=None, reason="stopped manually")
+            db.log("seq_stopped", lead_id=args.lead_id, rule=sequence, detail="manual")
+            print(f"Stopped {sequence} for {rec.get('lead_name') or args.lead_id}.")
+            stopped += 1
+        elif args.block and not rec:
+            db.seq_upsert(sequence, args.lead_id, status="stopped", reason="blocked manually")
+            print(f"Blocked {sequence} for {args.lead_id}: it will never be enrolled.")
+            stopped += 1
+    if not stopped:
+        print("Nothing to stop (no active run). Use --block to keep the lead out for good.")
+
+
 def cmd_stop(args, settings) -> None:
     settings.stop_file.write_text("Created with `outbound stop`. Delete this file or run `outbound resume` to resume.\n")
     print(f"STOP file created at {settings.stop_file}. Nothing will be sent or scheduled.")
@@ -447,6 +552,26 @@ def main(argv=None) -> None:
     p = sub.add_parser("cancel-scheduled", help="delete every scheduled first text from Close")
     p.add_argument("--yes", action="store_true")
     p.set_defaults(func=lambda a, s: asyncio.run(_cancel_scheduled(a, s)))
+
+    p = sub.add_parser("seq-preview", help="who is in the nurture / SS prep views and what would be texted")
+    p.add_argument("which", nargs="?", default="all", choices=["all", "nurture", "prep"])
+    p.add_argument("--limit", type=int, default=0)
+    p.set_defaults(func=lambda a, s: asyncio.run(_seq_preview(a, s)))
+
+    p = sub.add_parser("seq-status", help="active nurture / SS prep runs and what is next")
+    p.set_defaults(func=cmd_seq_status)
+
+    p = sub.add_parser("seq-baseline", help="leave everyone already in the view(s) alone; only new leads get texts")
+    p.add_argument("which", nargs="?", default="all", choices=["all", "nurture", "prep"])
+    p.add_argument("--yes", action="store_true")
+    p.add_argument("--undo", action="store_true")
+    p.set_defaults(func=lambda a, s: asyncio.run(_seq_baseline(a, s)))
+
+    p = sub.add_parser("seq-stop", help="stop the nurture / SS prep texts for one lead")
+    p.add_argument("lead_id")
+    p.add_argument("which", nargs="?", default="all", choices=["all", "nurture", "prep"])
+    p.add_argument("--block", action="store_true", help="also keep the lead from ever being enrolled")
+    p.set_defaults(func=cmd_seq_stop)
 
     sub.add_parser("status", help="queue, scheduled texts and recent errors").set_defaults(func=cmd_status)
     sub.add_parser("stop", help="create the STOP file (kill switch)").set_defaults(func=cmd_stop)

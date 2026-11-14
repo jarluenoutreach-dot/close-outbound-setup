@@ -46,6 +46,60 @@ The text goes to the first contact that has a phone. The time zone comes from th
 
 ---
 
+## Follow-up sequences (nurture + SS prep)
+
+The same service also runs two follow-up sequences. They replace Close workflows: nothing is set up in Close except two **private** smart views, and every text goes out from **+1 978-666-9462** as you (the API key's owner). Both are **off** until you set `NURTURE_ENABLED=true` / `PREP_ENABLED=true` in `.env`.
+
+**Send window:** Mon–Sat, 9am–6pm Central (`SEQ_WINDOW_*`). A text that comes due outside the window waits for the next opening. The 15s gap / 60-per-hour cap and the `STOP` file are shared with the first texts.
+
+### Booked nurture: 8 texts over 15 days
+Watches **Jarluen – Booked Nurture (SMS)**: leads you texted, with an opportunity *you own* in TC Completed, TC Booked or SS Completed, minus Bad Fit, DNC, Wrong Number, Bad Data, Student, Customer and Deposit, and anyone active in a Close workflow.
+
+| Day | Text |
+|---|---|
+| 0 (as soon as the lead enters the view) | Intro: "Hey {name}, it's Jarluen from Daeron's team…" |
+| 1 | Nudge: "…just making sure you saw my text yesterday…" (only if they haven't replied) |
+| 2 | FedEx driver to $10k/month video |
+| 4 | "What's the #1 thing holding you back…" |
+| 6 | Diamond Program breakdown |
+| 8 | Daeron's $65k video |
+| 11 | "Want me to check what's open on the calendar…" |
+| 15 | "Should I close out your file…" |
+
+**Stops when:** the lead texts back, calls in, gets a meeting booked, the lead status changes, an opportunity moves to SS Booked, or the lead leaves the smart view. Before every text the service also re-checks that you still own a TC Completed / TC Booked / SS Completed opportunity on the lead.
+
+### SS prep: slides before the Strategy Session
+Watches **Jarluen – SS Booked (prep texts)**: leads whose **Setter Lead Owner** is you, with an opportunity in **SS Booked** (the closer owns the opportunity at that point, so the setter field is what marks the lead as yours).
+
+The service reads the upcoming meeting from Close:
+- **Meeting 2+ days out:** slides text right away, then "did you get a chance to go through the slides?" a day later. The check-in is skipped if the call is less than 3 hours away by then.
+- **Meeting within 2 days:** the slides text only.
+- **No meeting in Close yet:** it waits up to 30 minutes for the calendar to sync, then sends the slides text only.
+
+**Stops when:** the lead texts back, calls in, the lead status changes, the call time passes, or the lead leaves the view (for example the opportunity moves to SS Completed). A lead that gets booked while in the nurture is moved over: the nurture stops and the prep texts start.
+
+Each lead goes through each sequence **once**. Every text adds a note on the lead ("Booked nurture text 2/8 (nudge) sent"). A failed text stops that lead's sequence and creates a Close task; 3 failures in an hour creates `STOP`.
+
+### Turning them on
+```bash
+outbound seq-preview                 # who is in each view and what text 1 would be; nothing is sent
+outbound seq-baseline nurture --yes  # optional: leave current nurture leads alone, only text new ones
+sudo nano /opt/close-outbound-setup/.env   # NURTURE_ENABLED=true, PREP_ENABLED=true
+sudo systemctl restart close-outbound
+outbound seq-status                  # active runs and the next text for each
+```
+
+| Command | What it does |
+|---|---|
+| `outbound seq-preview [nurture\|prep]` | Dry run of both views |
+| `outbound seq-status` | Counts, active runs, next text times |
+| `outbound seq-stop LEAD_ID [--block]` | Stop one lead (`--block` keeps it out for good) |
+| `outbound seq-baseline [nurture\|prep] --yes` / `--undo` | Leave leads already in the view alone |
+
+Message wording lives in `outbound/sequences.py`. Edit it there, then run `sudo ./deploy/update.sh` after pushing.
+
+---
+
 ## Setup on the VPS
 
 Assumes Ubuntu or Debian, a domain or subdomain (e.g. `texts.yourdomain.com`), and ports 80 and 443 open.
@@ -149,5 +203,7 @@ The tests run the whole flow against a fake Close: every rule, scheduling and sp
 | `outbound/close_api.py` | Close REST client |
 | `outbound/app.py` | FastAPI webhook endpoint, background loops, Telegram commands |
 | `outbound/report.py` | Weekly report |
+| `outbound/sequences.py` | Nurture and SS prep messages, steps and Close IDs |
+| `outbound/seq_engine.py` | Sequence enroll → re-check → send → verify |
 | `outbound/__main__.py` | CLI |
 | `deploy/` | install script, systemd unit, Caddy config |

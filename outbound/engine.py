@@ -61,6 +61,7 @@ class Engine:
         self._dirty: set[str] = set()
         self._tasks: set[asyncio.Task] = set()
         self._weekly_next_try: datetime | None = None
+        self.sequences = None  # SequenceRunner, attached by the app
 
     # ------------------------------------------------------------------ utils
     def stopped(self) -> bool:
@@ -683,4 +684,6 @@ class Engine:
         ]
         if last_sent:
             lines.append(f"Last text: {parse_dt(last_sent['ts']).astimezone(CENTRAL).strftime('%a %b %d %I:%M %p %Z')}")
+        if self.sequences is not None:
+            lines.extend(self.sequences.status_lines())
         return "\n".join(lines)

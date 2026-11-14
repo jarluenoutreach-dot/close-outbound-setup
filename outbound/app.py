@@ -15,6 +15,8 @@ from .db import Db
 from .engine import Engine
 from .report import build_report
 from .security import verify_signature
+from .seq_engine import SequenceRunner
+from .sequences import NURTURE, PREP
 from .telegram import Telegram
 
 log = logging.getLogger("outbound.app")
@@ -98,6 +100,8 @@ def create_app(settings: Settings, *, dry_run: bool = False) -> FastAPI:
         close = CloseClient(settings.close_api_key)
         tg = Telegram(settings.telegram_bot_token, settings.telegram_chat_id)
         engine = Engine(settings, db, close, tg, dry_run=dry_run)
+        seq = SequenceRunner(engine)
+        engine.sequences = seq
         app.state.engine = engine
         if not settings.webhook_signature_key:
             log.error("CLOSE_WEBHOOK_SIGNATURE_KEY is not set: every webhook will be rejected. Run `outbound setup-webhook`.")
@@ -107,6 +111,10 @@ def create_app(settings: Settings, *, dry_run: bool = False) -> FastAPI:
             run_every("morning-check", 15, engine.morning_tick),
             run_every("sweep", settings.sweep_interval_seconds, engine.sweep, initial_delay=20),
             run_every("weekly-report", 60, engine.weekly_tick),
+            run_every("nurture-sweep", settings.seq_sweep_interval_seconds, lambda: seq.sweep(NURTURE), initial_delay=40),
+            run_every("prep-sweep", settings.seq_sweep_interval_seconds, lambda: seq.sweep(PREP), initial_delay=30),
+            run_every("sequence-send", 5, seq.due_tick),
+            run_every("sequence-verify", 15, seq.verify_tick),
             telegram_loop(engine),
         ]
         tasks = [asyncio.create_task(loop) for loop in loops]

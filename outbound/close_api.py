@@ -156,6 +156,17 @@ class CloseClient:
     async def get_lead(self, lead_id: str) -> dict | None:
         return await self._request("GET", f"/lead/{lead_id}/", params={"_fields": LEAD_FIELDS}, allow_404=True)
 
+    async def get_lead_full(self, lead_id: str) -> dict | None:
+        """The whole lead, including custom fields (keys 'custom.cf_...')."""
+        return await self._request("GET", f"/lead/{lead_id}/", allow_404=True)
+
+    async def list_opportunities(self, lead_id: str) -> list[dict]:
+        data = await self._request(
+            "GET", "/opportunity/", params={"lead_id": lead_id, "_limit": 100,
+                                            "_fields": "id,lead_id,user_id,status_id,status_label,status_type"}
+        )
+        return data.get("data", [])
+
     async def list_activities(self, kind: str, lead_id: str) -> list[dict]:
         """All activities of one kind for a lead: 'sms', 'call', 'meeting', 'status_change/lead'."""
         out: list[dict] = []

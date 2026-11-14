@@ -1,0 +1,125 @@
+"""Follow-up text sequences: the booked-call nurture and the Strategy Session prep texts.
+
+Each sequence watches one private smart view. A lead that shows up in the view is enrolled once
+(ever) and gets the steps below, sent from LOCAL_PHONE as the API key's owner. Every step is
+re-checked right before it goes out; see SequenceRunner.stop_reason for what ends a run.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import timedelta
+
+# ---- Close IDs (Sales pipeline) ------------------------------------------------
+TC_BOOKED = "stat_KzzYLToP5c1mXvgslQqArqo7FYe1yZEvV3AErIhhea1"
+TC_COMPLETED = "stat_tB6T6WtDAJkuiuj6YGfOli0PfjSuxhUREMDBuM4DAVe"
+SS_BOOKED = "stat_sfJxlhINTVxVEl8EK3dQbXJOs8gzt6RTaCaJ8gL3CrX"
+SS_COMPLETED = "stat_oHqiKM3HcBdGuiXgUK34Gqsb5NuKG98L1V0DUZmP3Gz"
+
+# Lead custom field "Setter Lead Owner" (a user field).
+SETTER_FIELD = "cf_bIpeW66wo36K6ny1zEe3pQ7tQnxOmiSsU2GwDmchXWv"
+
+DEFAULT_NURTURE_VIEW_ID = "save_YJX4M0AKp11oDsjeP1oUVSMazgR3nL4bVIE3R2jaVk0"  # Jarluen – Booked Nurture (SMS)
+DEFAULT_PREP_VIEW_ID = "save_0M5Nb1OnPVBJWZWibZrhCZXeIYgw3PoKCVMLeMAMXHz"  # Jarluen – SS Booked (prep texts)
+
+SLIDES_URL = "https://gamma.app/docs/Diamond-Program-qm9r81lcp22mjbd?mode=doc"
+
+# ---- Messages: (with first name, without first name) ---------------------------
+MESSAGES: dict[str, tuple[str, str]] = {
+    "intro": (
+        "Hey {name}, it's Jarluen from Daeron's team at Courier Business Academy. Great connecting with you! "
+        "The next step is a Strategy Session with one of our advisors to map out your game plan for the "
+        "courier business. Want me to send you a few times that work?",
+        "Hey, it's Jarluen from Daeron's team at Courier Business Academy. Great connecting with you! "
+        "The next step is a Strategy Session with one of our advisors to map out your game plan for the "
+        "courier business. Want me to send you a few times that work?",
+    ),
+    "nudge": (
+        "Hey {name}, just making sure you saw my text yesterday. Want me to send over a few times for your "
+        "Strategy Session?",
+        "Hey, just making sure you saw my text yesterday. Want me to send over a few times for your "
+        "Strategy Session?",
+    ),
+    "fedex": (
+        "Thought you'd like this one. One of our students went from FedEx driver to $10k/month, and this "
+        "shows how: https://youtu.be/MhFYz5KjOBQ. Let me know what you think!",
+    ) * 2,
+    "question": (
+        "Quick question, {name}: what's the #1 thing holding you back right now? Time, money, or not "
+        "knowing where to start?",
+        "Quick question: what's the #1 thing holding you back right now? Time, money, or not knowing "
+        "where to start?",
+    ),
+    "diamond": (
+        "Here's the full breakdown of our Diamond Program so you can see exactly how we help: "
+        "https://gamma.app/docs/Diamond-Program-qm9r81lcp22mjbd?mode=doc. We'd go through which path fits "
+        "you on the Strategy Session.",
+    ) * 2,
+    "daeron": (
+        "This one's a must-watch. Daeron shows how he made $65k in 3 months subcontracting with just his "
+        "car: https://www.youtube.com/watch?v=wHtJPqYmBdU",
+    ) * 2,
+    "calendar": (
+        "{name}, want me to check what's open on the calendar this week for your Strategy Session? Takes "
+        "2 minutes to lock in.",
+        "Want me to check what's open on the calendar this week for your Strategy Session? Takes 2 "
+        "minutes to lock in.",
+    ),
+    "breakup": (
+        "Hey {name}, I don't want to keep bugging you. Should I close out your file for now, or are you "
+        "still serious about building your courier business?",
+        "Hey, I don't want to keep bugging you. Should I close out your file for now, or are you still "
+        "serious about building your courier business?",
+    ),
+    "slides": (
+        "You're all set for your Strategy Session, {name}! Please go through these slides before the "
+        f"call: {SLIDES_URL}",
+        f"You're all set for your Strategy Session! Please go through these slides before the call: {SLIDES_URL}",
+    ),
+    "slides_check": (
+        "Quick check, {name}: did you get a chance to go through the slides? Jot down any questions so we "
+        "can cover them on your call.",
+        "Quick check: did you get a chance to go through the slides? Jot down any questions so we can "
+        "cover them on your call.",
+    ),
+}
+
+
+def render(key: str, first_name: str | None) -> str:
+    with_name, without = MESSAGES[key]
+    return with_name.format(name=first_name) if first_name else without
+
+
+@dataclass(frozen=True)
+class Step:
+    message: str
+    delay: timedelta  # after the previous step went out (or after enrolling, for step 1)
+
+
+DAY = timedelta(days=1)
+
+# Day 0 (on enroll), 1, 2, 4, 6, 8, 11, 15.
+NURTURE_STEPS = (
+    Step("intro", timedelta(0)),
+    Step("nudge", DAY),
+    Step("fedex", DAY),
+    Step("question", 2 * DAY),
+    Step("diamond", 2 * DAY),
+    Step("daeron", 2 * DAY),
+    Step("calendar", 3 * DAY),
+    Step("breakup", 4 * DAY),
+)
+
+# Meeting 2+ days out: slides now, check-in a day later. Sooner: slides only.
+PREP_LONG_STEPS = (Step("slides", timedelta(0)), Step("slides_check", DAY))
+PREP_SHORT_STEPS = (Step("slides", timedelta(0)),)
+
+NURTURE = "nurture"
+PREP = "prep"
+
+VARIANT_STEPS = {
+    "nurture": NURTURE_STEPS,
+    "prep_long": PREP_LONG_STEPS,
+    "prep_short": PREP_SHORT_STEPS,
+}
+
+SEQUENCE_LABELS = {NURTURE: "Booked nurture", PREP: "SS prep"}
