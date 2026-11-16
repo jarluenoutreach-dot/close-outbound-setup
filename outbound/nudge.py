@@ -31,6 +31,39 @@ START_KEY = "nudge_started_at"
 _PENDING = {"scheduled", "outbox"}
 
 
+def no_reply_problem(settings, rec: dict, lead: dict, sms: list[dict], calls: list[dict], meetings: list[dict],
+                     own_sms_ids: frozenset[str] = frozenset()) -> tuple[str | None, bool]:
+    """Why this webinar lead must not get a no-reply text, or (None, False) if it may.
+
+    The rule: never text a lead who has ever answered anyone on the team. The second value is
+    True when another SMS is pending for the lead, so the caller should look again later."""
+    if any(is_inbound_sms(s) for s in sms):
+        return "lead has replied by text before", False
+    if any((c.get("direction") or "").lower() in ("inbound", "incoming") for c in calls):
+        return "lead has called in before", False
+    if any((c.get("duration") or 0) >= settings.long_call_seconds for c in calls):
+        return "someone already had a conversation with the lead by phone", False
+    if meetings:
+        return "lead has a meeting", False
+    status = lead.get("status_label") or ""
+    if status.casefold() in _BLOCKED:
+        return f"lead status is {status}", False
+    sent_at = parse_dt(rec.get("sent_at"))
+    mine = own_sms_ids | {rec.get("sms_activity_id")}
+    for s in sms:
+        if is_inbound_sms(s) or s.get("id") in mine:
+            continue
+        if (s.get("status") or "").lower() in _PENDING:
+            return None, True
+        when = parse_dt(s.get("date_created") or s.get("activity_at"))
+        if s.get("user_id") != settings.my_user_id and when and sent_at and when > sent_at:
+            return "another setter texted the lead after the first text", False
+    first = next((s for s in sms if s.get("id") == rec.get("sms_activity_id")), None)
+    if first and (first.get("status") or "").lower() == "error":
+        return "first text failed", False
+    return None, False
+
+
 def render_nudge(first_name: str | None) -> str:
     return NUDGE_TEXT.format(name=first_name) if first_name else NUDGE_TEXT_NO_NAME
 
@@ -93,37 +126,11 @@ class NudgeRunner:
             self._done(lead_id, "skipped", "lead was deleted")
             return False
 
-        # The rule: never nudge a lead who has ever answered anyone on the team.
-        if any(is_inbound_sms(s) for s in sms):
-            self._done(lead_id, "skipped", "lead has replied by text before")
-            return False
-        if any((c.get("direction") or "").lower() in ("inbound", "incoming") for c in calls):
-            self._done(lead_id, "skipped", "lead has called in before")
-            return False
-        if any((c.get("duration") or 0) >= self.s.long_call_seconds for c in calls):
-            self._done(lead_id, "skipped", "someone already had a conversation with the lead by phone")
-            return False
-        if meetings:
-            self._done(lead_id, "skipped", "lead has a meeting")
-            return False
-        status = lead.get("status_label") or ""
-        if status.casefold() in _BLOCKED:
-            self._done(lead_id, "skipped", f"lead status is {status}")
-            return False
-        sent_at = parse_dt(rec.get("sent_at"))
-        for s in sms:
-            if is_inbound_sms(s) or s.get("id") == rec.get("sms_activity_id"):
-                continue
-            state = (s.get("status") or "").lower()
-            if state in _PENDING:
-                return False  # something else is about to go out; look again next tick
-            when = parse_dt(s.get("date_created") or s.get("activity_at"))
-            if s.get("user_id") != self.s.my_user_id and when and sent_at and when > sent_at:
-                self._done(lead_id, "skipped", "another setter texted the lead after the first text")
-                return False
-        first = next((s for s in sms if s.get("id") == rec.get("sms_activity_id")), None)
-        if first and (first.get("status") or "").lower() == "error":
-            self._done(lead_id, "skipped", "first text failed")
+        reason, pending = no_reply_problem(self.s, rec, lead, sms, calls, meetings)
+        if pending:
+            return False  # something else is about to go out; look again next tick
+        if reason:
+            self._done(lead_id, "skipped", reason)
             return False
 
         text = render_nudge(rec.get("first_name") or _first_name(lead, rec.get("contact_id")))

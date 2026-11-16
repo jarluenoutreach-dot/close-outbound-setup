@@ -18,7 +18,7 @@ SS_COMPLETED = "stat_oHqiKM3HcBdGuiXgUK34Gqsb5NuKG98L1V0DUZmP3Gz"
 # Lead custom field "Setter Lead Owner" (a user field).
 SETTER_FIELD = "cf_bIpeW66wo36K6ny1zEe3pQ7tQnxOmiSsU2GwDmchXWv"
 
-DEFAULT_NURTURE_VIEW_ID = "save_YJX4M0AKp11oDsjeP1oUVSMazgR3nL4bVIE3R2jaVk0"  # Jarluen – Booked Nurture (SMS)
+DEFAULT_NURTURE_VIEW_ID = "save_vifT1TIiKfAgpoDLSfUumF4OJOisTuUvq42XtI3RY8x"  # Jarluen – TC Completed Nurture (SMS)
 DEFAULT_PREP_VIEW_ID = "save_lOa7Gam9Abxs5jM3QNr9VEGwvETDtaOHxdbuxtcjmH0"  # Jarluen – Booked Calls (prep texts)
 
 # Views the sequences watched before a view change. Switching to a new view leaves everyone

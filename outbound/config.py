@@ -62,6 +62,12 @@ class Settings:
     nudge_enabled: bool = True
     nudge_after_hours: int = 24
 
+    # Webinar Day 3 / Day 7 no-reply follow-ups (outbound/noreply.py), in the lead's own time zone
+    noreply_enabled: bool = True
+    noreply_start_hour: int = 9
+    noreply_end_hour: int = 19
+    noreply_days: tuple[int, ...] = (0, 1, 2, 3, 4, 5)  # Monday=0 ... Saturday=5
+
     # Follow-up sequences (outbound/sequences.py). Both ON unless turned off in .env.
     nurture_enabled: bool = True
     prep_enabled: bool = True
@@ -172,6 +178,10 @@ def load_settings(env_file: Path = ENV_FILE) -> Settings:
         test_phones=_phones("TEST_PHONES"),
         nudge_enabled=_bool("NUDGE_ENABLED", True),
         nudge_after_hours=_int("NUDGE_AFTER_HOURS", 24),
+        noreply_enabled=_bool("NOREPLY_ENABLED", True),
+        noreply_start_hour=_int("NOREPLY_START_HOUR", 9),
+        noreply_end_hour=_int("NOREPLY_END_HOUR", 19),
+        noreply_days=_days("NOREPLY_DAYS", (0, 1, 2, 3, 4, 5)),
         nurture_enabled=_bool("NURTURE_ENABLED", True),
         prep_enabled=_bool("PREP_ENABLED", True),
         nurture_view_id=_str("NURTURE_VIEW_ID", DEFAULT_NURTURE_VIEW_ID),

@@ -50,6 +50,11 @@ LEAD_COLUMNS = {
     "nudge_reason": "TEXT",
     "nudge_sent_at": "TEXT",
     "nudge_sms_id": "TEXT",
+    "noreply_step": "INTEGER",  # Day 3 / Day 7 follow-ups sent so far (outbound/noreply.py)
+    "noreply_status": "TEXT",  # NULL = still going | done | stopped | error
+    "noreply_reason": "TEXT",
+    "noreply_last_at": "TEXT",
+    "noreply_sms_ids": "TEXT",
 }
 
 SCHEMA = (
@@ -103,7 +108,8 @@ SEQ_COLUMNS = {
 
 # Every text the service sends counts toward the shared 15s gap / hourly cap, first texts and
 # sequence texts alike.
-SEND_EVENTS = ("sent", "send_failed", "seq_sent", "seq_send_failed", "nudge_sent", "nudge_send_failed")
+SEND_EVENTS = ("sent", "send_failed", "seq_sent", "seq_send_failed", "nudge_sent", "nudge_send_failed",
+               "noreply_sent", "noreply_send_failed")
 
 
 class Db:

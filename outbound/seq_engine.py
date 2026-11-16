@@ -31,8 +31,6 @@ from .sequences import (
     SEQUENCE_LABELS,
     SETTER_FIELD,
     SS_BOOKED,
-    SS_COMPLETED,
-    TC_BOOKED,
     TC_COMPLETED,
     VARIANT_STEPS,
     render,
@@ -41,7 +39,7 @@ from .timeutil import iso, parse_dt
 
 log = logging.getLogger("outbound.seq")
 
-NURTURE_OPP_STATUSES = {TC_COMPLETED, TC_BOOKED, SS_COMPLETED}
+NURTURE_OPP_STATUSES = {TC_COMPLETED}
 _PENDING = {"scheduled", "outbox"}
 _CANCELED_WORDS = ("cancel", "declin", "no-show", "noshow")
 
@@ -115,7 +113,7 @@ class SequenceRunner:
         if sequence == NURTURE:
             if any(o.get("user_id") == me and o.get("status_id") in NURTURE_OPP_STATUSES for o in data["opps"]):
                 return None
-            return "no TC Completed / TC Booked / SS Completed opportunity owned by you"
+            return "no TC Completed opportunity owned by you"
         booked = any(o.get("status_id") == SS_BOOKED for o in data["opps"])
         if not booked and self.next_meeting(data["meetings"], self.e.clock()) is None:
             return "no Strategy Session booked (no upcoming meeting, no SS Booked opportunity)"

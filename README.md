@@ -58,7 +58,17 @@ The text goes to the first contact that has a phone. The time zone comes from th
 - the lead has a blocked status
 - the first text failed
 
-Only first texts sent after the nudge went live are nudged; older leads are left alone. It adds a note on the lead, obeys the STOP file and `/timer`, and shares the send pacing. Turn it off with `NUDGE_ENABLED=false` in `.env`; change the delay with `NUDGE_AFTER_HOURS`. The wording is in `outbound/nudge.py`.
+Only first texts sent after the nudge went live are nudged; older leads are left alone.
+
+### Day 3 and Day 7 follow-ups
+Leads who got the nudge and still never answered anyone get two more texts, timed from the first text and sent **Mon–Sat, 9am–7pm in the lead's time zone** (`NOREPLY_*` in `.env`):
+
+| Day | Text |
+|---|---|
+| 3 | Hey {name}, Jarluen again from Daeron's team. Still thinking about the courier business? Happy to answer any questions. |
+| 7 | {name}, is starting a courier business still something you want this year, or should I check back later? |
+
+Each one is re-checked with the same rules as the nudge, so any reply, inbound call, phone conversation, meeting, another setter's text or blocked status stops them. Only leads first texted after the follow-ups went live get them. Wording is in `outbound/noreply.py`; `NOREPLY_ENABLED=false` turns them off. It adds a note on the lead, obeys the STOP file and `/timer`, and shares the send pacing. Turn it off with `NUDGE_ENABLED=false` in `.env`; change the delay with `NUDGE_AFTER_HOURS`. The wording is in `outbound/nudge.py`.
 
 ---
 
@@ -73,8 +83,8 @@ A lead is yours when its **Setter Lead Owner is you**, or the field is blank and
 
 When a sequence switches to a different smart view, everyone already in the new view is left alone, the same as on the first run.
 
-### Booked nurture: 8 texts over 15 days
-Watches **Jarluen – Booked Nurture (SMS)**: leads you texted, with an opportunity *you own* in TC Completed, TC Booked or SS Completed, minus Bad Fit, DNC, Wrong Number, Bad Data, Student, Customer and Deposit, and anyone active in a Close workflow.
+### TC Completed nurture: 8 texts over 15 days
+Watches **Jarluen – TC Completed Nurture (SMS)**: leads you texted and had your call with, with an opportunity *you own* in **TC Completed**, minus Bad Fit, DNC, Wrong Number, Bad Data, Student, Customer and Deposit, and anyone active in a Close workflow.
 
 | Day | Text |
 |---|---|
