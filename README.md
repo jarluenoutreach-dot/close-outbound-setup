@@ -68,6 +68,11 @@ The same service also runs two follow-up sequences. They replace Close workflows
 
 **Send window:** Mon–Sat, 9am–6pm Central (`SEQ_WINDOW_*`). A text that comes due outside the window waits for the next opening. The 15s gap / 60-per-hour cap and the `STOP` file are shared with the first texts.
 
+### Whose leads
+A lead is yours when its **Setter Lead Owner is you**, or the field is blank and **you own an opportunity** on it. A lead whose Setter Lead Owner is anyone else never gets these texts, even if you own the opportunity. This is checked when the lead is enrolled and again before every text.
+
+When a sequence switches to a different smart view, everyone already in the new view is left alone, the same as on the first run.
+
 ### Booked nurture: 8 texts over 15 days
 Watches **Jarluen – Booked Nurture (SMS)**: leads you texted, with an opportunity *you own* in TC Completed, TC Booked or SS Completed, minus Bad Fit, DNC, Wrong Number, Bad Data, Student, Customer and Deposit, and anyone active in a Close workflow.
 
@@ -82,10 +87,12 @@ Watches **Jarluen – Booked Nurture (SMS)**: leads you texted, with an opportun
 | 11 | "Want me to check what's open on the calendar…" |
 | 15 | "Should I close out your file…" |
 
+**Waits while a call is booked:** a lead with an upcoming meeting isn't started (and a running nurture stops), so nobody gets "want a few times?" with a call already on the calendar.
+
 **Stops when:** the lead texts back, calls in, gets a meeting booked, the lead status changes, an opportunity moves to SS Booked, or the lead leaves the smart view. Before every text the service also re-checks that you still own a TC Completed / TC Booked / SS Completed opportunity on the lead.
 
 ### SS prep: slides before the Strategy Session
-Watches **Jarluen – SS Booked (prep texts)**: leads whose **Setter Lead Owner** is you, with an opportunity in **SS Booked** (the closer owns the opportunity at that point, so the setter field is what marks the lead as yours).
+Watches **Jarluen – Booked Calls (prep texts)**: your leads with an **upcoming meeting** or an opportunity in **SS Booked**. The opportunity stage doesn't matter, so a call booked while the opportunity stays in TC Completed still counts.
 
 The service reads the upcoming meeting from Close:
 - **Meeting 2+ days out:** slides text right away, then "did you get a chance to go through the slides?" a day later. The check-in is skipped if the call is less than 3 hours away by then.
