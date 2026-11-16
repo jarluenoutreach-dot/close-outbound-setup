@@ -218,6 +218,14 @@ class SequenceRunner:
         log.info("[%s] ENROLLED %s (%s) %s, %s texts%s", sequence, plan.get("lead_name"), lead_id,
                  plan["variant"], steps, extra)
 
+    def needs_baseline(self, sequence: str) -> bool:
+        """True when the next sweep will leave everyone currently in the view alone:
+        the first run after turning the sequence on, or after switching to a new view."""
+        if self.db.kv_get(f"seq_started:{sequence}") is None:
+            return True
+        started_view = self.db.kv_get(f"seq_view:{sequence}") or LEGACY_VIEW_IDS.get(sequence)
+        return started_view != self.view_id(sequence)
+
     async def sweep(self, sequence: str) -> int:
         if not self.enabled(sequence) or self.e.stopped():
             return 0
@@ -226,11 +234,9 @@ class SequenceRunner:
         start_key = f"seq_started:{sequence}"
         view_key = f"seq_view:{sequence}"
         view = self.view_id(sequence)
-        started_view = self.db.kv_get(view_key) or LEGACY_VIEW_IDS.get(sequence)
-        if self.db.kv_get(start_key) is not None and started_view != view:
-            log.info("[%s] watching a new smart view; leads already in it will be left alone", sequence)
-            self.db.conn.execute("DELETE FROM kv WHERE key = ?", (start_key,))
-        if self.db.kv_get(start_key) is None:
+        if self.needs_baseline(sequence):
+            if self.db.kv_get(start_key) is not None:
+                log.info("[%s] watching a new smart view; leads already in it will be left alone", sequence)
             # First sweep since this sequence was turned on: only leads that join from now on get texts.
             marked = 0
             for lead_id in ids:

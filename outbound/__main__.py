@@ -422,9 +422,14 @@ async def _seq_preview(args, settings) -> None:
             ids = await close.view_lead_ids(seq.view_id(sequence))
             print(f"\n=== {SEQUENCE_LABELS[sequence]} ({'ON' if seq.enabled(sequence) else 'OFF'}): "
                   f"{len(ids)} leads in the view ===")
-            if db.kv_get(f"seq_started:{sequence}") is None:
-                print(f"  First run: all {len(ids)} leads already in this view will be left alone (never texted).")
-                print("  Only leads that join the view after you turn it on get texts.")
+            if seq.needs_baseline(sequence):
+                why = ("the sequence is watching a new smart view" if db.kv_get(f"seq_started:{sequence}")
+                       else "this is the first run")
+                print(f"  Because {why}, all {len(ids)} leads already in this view will be LEFT ALONE (never texted):")
+                for lead_id in ids[: args.limit or None]:
+                    lead = await close.get_lead(lead_id)
+                    print(f"    - {(lead or {}).get('display_name') or lead_id}")
+                print("  Only leads that join the view after this get texts.")
                 continue
             counts: dict[str, int] = {}
             for lead_id in ids[: args.limit or None]:
@@ -448,6 +453,16 @@ async def _seq_preview(args, settings) -> None:
                 else:
                     print(f"  {name}: {action.upper()} - {plan.get('reason')}")
             print("  Summary: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+            running = db.seq_rows(sequence=sequence, statuses=("active", "waiting"))
+            if running:
+                print("  Already running (next text):")
+                for rec in running:
+                    steps = VARIANT_STEPS.get(rec.get("variant") or "", ())
+                    due = parse_dt(rec.get("due_at"))
+                    when = seq._local(seq.next_open(max(due, now))) if due else "-"
+                    nxt = steps[rec["step"]].message if steps and rec["step"] < len(steps) else "?"
+                    print(f"    - {rec.get('lead_name')}: text {rec['step'] + 1}/{len(steps) or '?'} ({nxt}) "
+                          f"{when}, re-checked first")
     finally:
         await close.aclose()
     print("\nNothing was sent or saved. Send window: "
