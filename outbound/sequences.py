@@ -19,7 +19,14 @@ SS_COMPLETED = "stat_oHqiKM3HcBdGuiXgUK34Gqsb5NuKG98L1V0DUZmP3Gz"
 SETTER_FIELD = "cf_bIpeW66wo36K6ny1zEe3pQ7tQnxOmiSsU2GwDmchXWv"
 
 DEFAULT_NURTURE_VIEW_ID = "save_YJX4M0AKp11oDsjeP1oUVSMazgR3nL4bVIE3R2jaVk0"  # Jarluen – Booked Nurture (SMS)
-DEFAULT_PREP_VIEW_ID = "save_0M5Nb1OnPVBJWZWibZrhCZXeIYgw3PoKCVMLeMAMXHz"  # Jarluen – SS Booked (prep texts)
+DEFAULT_PREP_VIEW_ID = "save_lOa7Gam9Abxs5jM3QNr9VEGwvETDtaOHxdbuxtcjmH0"  # Jarluen – Booked Calls (prep texts)
+
+# Views the sequences watched before a view change. Switching to a new view leaves everyone
+# already in it alone, the same as turning a sequence on for the first time.
+LEGACY_VIEW_IDS = {
+    "nurture": "save_YJX4M0AKp11oDsjeP1oUVSMazgR3nL4bVIE3R2jaVk0",
+    "prep": "save_0M5Nb1OnPVBJWZWibZrhCZXeIYgw3PoKCVMLeMAMXHz",  # Jarluen – SS Booked (prep texts)
+}
 
 SLIDES_URL = "https://gamma.app/docs/Diamond-Program-qm9r81lcp22mjbd?mode=doc"
 

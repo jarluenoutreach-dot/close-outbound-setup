@@ -41,6 +41,8 @@ def setup(tmp_path, start=MON_9AM, dry_run=False, **overrides):
     # Tests start after go-live: the first-run baseline already happened (on an empty view).
     engine.db.kv_set("seq_started:nurture", "test")
     engine.db.kv_set("seq_started:prep", "test")
+    engine.db.kv_set("seq_view:nurture", "v_n")
+    engine.db.kv_set("seq_view:prep", "v_p")
     return seq, close, clock
 
 
@@ -152,7 +154,7 @@ def test_inbound_call_status_change_and_meeting_stop_nurture(tmp_path):
     reasons = {i: seq.db.seq_get(NURTURE, i)["reason"] for i in ("lead_call", "lead_status", "lead_meet")}
     assert reasons == {"lead_call": "lead called in",
                        "lead_status": "lead status changed from Potential to Qualified",
-                       "lead_meet": "meeting booked"}
+                       "lead_meet": "has a call booked"}
     assert len(close.created_sms) == 3  # only the first text each
 
 
@@ -222,7 +224,7 @@ def test_prep_only_when_i_am_the_setter(tmp_path):
     run(seq.sweep(PREP))
     run(tick_all(seq))
     assert close.created_sms == []
-    assert seq.db.seq_get(PREP, "lead_p")["reason"] == "Setter Lead Owner is not you"
+    assert seq.db.seq_get(PREP, "lead_p")["reason"] == "Setter Lead Owner is someone else"
 
 
 def test_prep_check_in_dropped_when_call_moved_too_close(tmp_path):
@@ -349,3 +351,102 @@ def test_first_run_leaves_existing_leads_alone(tmp_path):
     assert seq.db.seq_get(NURTURE, "lead_old")["status"] == "baseline"
     assert texts(close, "lead_old") == []
     assert texts(close, "lead_new") == [render("intro", "Sam")]
+
+
+# ---- whose leads, and booked calls without an SS Booked opportunity --------------
+
+def test_nurture_skips_lead_set_by_someone_else_even_if_i_own_the_opp(tmp_path):
+    seq, close, _ = setup(tmp_path)
+    lead = nurture_lead(close)
+    lead[f"custom.{SETTER_FIELD}"] = OTHER
+    run(seq.sweep(NURTURE))
+    run(tick_all(seq))
+    assert close.created_sms == []
+    assert seq.db.seq_get(NURTURE, "lead_n")["reason"] == "Setter Lead Owner is someone else"
+
+
+def test_nurture_with_my_setter_field_or_blank_is_mine(tmp_path):
+    seq, close, _ = setup(tmp_path)
+    nurture_lead(close, "lead_blank")
+    lead = nurture_lead(close, "lead_me", phone="+13125550111")
+    lead[f"custom.{SETTER_FIELD}"] = ME
+    run(seq.sweep(NURTURE))
+    run(tick_all(seq))
+    assert len(texts(close, "lead_blank")) == 1 and len(texts(close, "lead_me")) == 1
+
+
+def test_prep_with_meeting_but_opp_still_tc_completed(tmp_path):
+    seq, close, clock = setup(tmp_path)
+    lead = close.add_lead("lead_w", in_view=False)
+    lead[f"custom.{SETTER_FIELD}"] = ME
+    close.add_opp("lead_w", TC_COMPLETED, ME)
+    close.add_activity("meeting", "lead_w", starts_at=(clock.now + timedelta(days=3)).isoformat(),
+                       date_created=clock.now.isoformat(), user_id=OTHER)
+    close.views["v_p"].add("lead_w")
+    run(seq.sweep(PREP))
+    run(tick_all(seq))
+    assert texts(close, "lead_w") == [render("slides", "Sam")]
+    assert seq.db.seq_get(PREP, "lead_w")["variant"] == "prep_long"
+
+
+def test_prep_never_for_someone_elses_lead(tmp_path):
+    seq, close, clock = setup(tmp_path)
+    close.add_lead("lead_x", in_view=False)  # blank setter, opportunity owned by a closer
+    close.add_opp("lead_x", SS_BOOKED, OTHER)
+    close.add_activity("meeting", "lead_x", starts_at=(clock.now + timedelta(days=3)).isoformat(),
+                       date_created=clock.now.isoformat())
+    close.views["v_p"].add("lead_x")
+    run(seq.sweep(PREP))
+    run(tick_all(seq))
+    assert close.created_sms == []
+
+
+def test_nurture_waits_while_a_call_is_booked(tmp_path):
+    seq, close, clock = setup(tmp_path)
+    nurture_lead(close)
+    close.add_activity("meeting", "lead_n", starts_at=(clock.now + timedelta(hours=7)).isoformat(),
+                       date_created=(clock.now - timedelta(days=2)).isoformat())
+
+    async def go():
+        await seq.sweep(NURTURE)
+        await tick_all(seq)
+        assert close.created_sms == [] and seq.db.seq_get(NURTURE, "lead_n") is None
+        clock.advance(days=1)  # the call is over and the lead is still in the nurture view
+        await seq.sweep(NURTURE)
+        await tick_all(seq)
+    run(go())
+    assert texts(close, "lead_n") == [render("intro", "Sam")]
+
+
+def test_active_nurture_stops_when_a_call_gets_booked(tmp_path):
+    seq, close, clock = setup(tmp_path)
+    nurture_lead(close)
+
+    async def go():
+        await seq.sweep(NURTURE)
+        await tick_all(seq)
+        close.add_activity("meeting", "lead_n", starts_at=(clock.now + timedelta(days=4)).isoformat(),
+                           date_created=(clock.now - timedelta(days=5)).isoformat())  # synced late
+        clock.advance(days=1)
+        await tick_all(seq)
+    run(go())
+    assert len(texts(close, "lead_n")) == 1
+    assert seq.db.seq_get(NURTURE, "lead_n")["reason"] == "has a call booked"
+
+
+def test_switching_views_leaves_everyone_already_in_the_new_view_alone(tmp_path):
+    seq, close, clock = setup(tmp_path)
+    prep_lead(close, timedelta(days=3), clock.now, "lead_old")
+    close.views["v_new"] = set(close.views["v_p"])
+    seq.s = seq.e.s = seq.s.__class__(**{**seq.s.__dict__, "prep_view_id": "v_new"})
+
+    async def go():
+        await seq.sweep(PREP)  # new view: baseline
+        await tick_all(seq)
+        prep_lead(close, timedelta(days=3), clock.now, "lead_new", phone="+13125550188")
+        close.views["v_new"].add("lead_new")
+        await seq.sweep(PREP)
+        await tick_all(seq)
+    run(go())
+    assert texts(close, "lead_old") == []
+    assert texts(close, "lead_new") == [render("slides", "Sam")]

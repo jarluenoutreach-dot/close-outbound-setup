@@ -25,6 +25,7 @@ from .eligibility import (
 )
 from .messages import clean_first_name
 from .sequences import (
+    LEGACY_VIEW_IDS,
     NURTURE,
     PREP,
     SEQUENCE_LABELS,
@@ -94,18 +95,30 @@ class SequenceRunner:
         meetings = await self.close.list_activities("meeting", lead_id)
         return {"lead": lead, "opps": opps, "sms": sms, "calls": calls, "meetings": meetings}
 
+    def _owner_problem(self, data: dict) -> str | None:
+        """Your lead = Setter Lead Owner is you, or it is blank and you own an opportunity on it.
+        A lead whose Setter Lead Owner is anyone else is never yours."""
+        me = self.s.my_user_id
+        setter = data["lead"].get(f"custom.{SETTER_FIELD}")
+        if setter and setter != me:
+            return "Setter Lead Owner is someone else"
+        if not setter and not any(o.get("user_id") == me for o in data["opps"]):
+            return "not your lead (no Setter Lead Owner and no opportunity of yours)"
+        return None
+
     def _is_mine(self, sequence: str, data: dict) -> str | None:
         """None if this is Jarluen's lead for this sequence, else why not."""
+        problem = self._owner_problem(data)
+        if problem:
+            return problem
         me = self.s.my_user_id
         if sequence == NURTURE:
             if any(o.get("user_id") == me and o.get("status_id") in NURTURE_OPP_STATUSES for o in data["opps"]):
                 return None
             return "no TC Completed / TC Booked / SS Completed opportunity owned by you"
-        setter = data["lead"].get(f"custom.{SETTER_FIELD}")
-        if setter != me:
-            return "Setter Lead Owner is not you"
-        if not any(o.get("status_id") == SS_BOOKED for o in data["opps"]):
-            return "no opportunity in SS Booked"
+        booked = any(o.get("status_id") == SS_BOOKED for o in data["opps"])
+        if not booked and self.next_meeting(data["meetings"], self.e.clock()) is None:
+            return "no Strategy Session booked (no upcoming meeting, no SS Booked opportunity)"
         return None
 
     def next_meeting(self, meetings: list[dict], now: datetime) -> datetime | None:
@@ -143,6 +156,10 @@ class SequenceRunner:
         if sequence == NURTURE:
             if any(o.get("status_id") == SS_BOOKED for o in data["opps"]):
                 return {**plan, "action": "skip", "reason": "already has an SS Booked opportunity"}
+            upcoming = self.next_meeting(data["meetings"], now)
+            if upcoming is not None:
+                # Not recorded: looked at again on later sweeps, once the call is over.
+                return {**plan, "action": "later", "reason": f"has a call booked for {self._local(upcoming)}"}
             other = self.db.seq_get(PREP, lead_id)
             if other and other["status"] in ("active", "waiting"):
                 return {**plan, "action": "skip", "reason": "in the SS prep texts"}
@@ -163,6 +180,9 @@ class SequenceRunner:
             log.error("[%s] could not check %s: %s", sequence, lead_id, exc)
             return None
         action = plan["action"]
+        if action == "later":
+            log.debug("[%s] %s (%s): %s", sequence, plan.get("lead_name"), lead_id, plan["reason"])
+            return plan
         if action == "ignore":
             log.info("[%s] %s: %s", sequence, lead_id, plan["reason"])
             return plan
@@ -204,6 +224,12 @@ class SequenceRunner:
         ids = await self.close.view_lead_ids(self.view_id(sequence))
         members = set(ids)
         start_key = f"seq_started:{sequence}"
+        view_key = f"seq_view:{sequence}"
+        view = self.view_id(sequence)
+        started_view = self.db.kv_get(view_key) or LEGACY_VIEW_IDS.get(sequence)
+        if self.db.kv_get(start_key) is not None and started_view != view:
+            log.info("[%s] watching a new smart view; leads already in it will be left alone", sequence)
+            self.db.conn.execute("DELETE FROM kv WHERE key = ?", (start_key,))
         if self.db.kv_get(start_key) is None:
             # First sweep since this sequence was turned on: only leads that join from now on get texts.
             marked = 0
@@ -213,6 +239,7 @@ class SequenceRunner:
                                        reason="already in the view when the sequence was turned on")
                     marked += 1
             self.db.kv_set(start_key, iso(self.e.clock()))
+            self.db.kv_set(view_key, view)
             self._event("seq_baseline", rule=sequence, detail=f"{marked} existing leads left alone")
             log.info("[%s] first run: %s leads already in the view will not be texted", sequence, marked)
             return 0
@@ -260,6 +287,8 @@ class SequenceRunner:
         if rec["sequence"] == NURTURE:
             if any(o.get("status_id") == SS_BOOKED for o in data["opps"]):
                 return "opportunity moved to SS Booked"
+            if self.next_meeting(data["meetings"], now) is not None:
+                return "has a call booked"
             for m in data["meetings"]:
                 created = parse_dt(m.get("date_created"))
                 if created and created >= since:
