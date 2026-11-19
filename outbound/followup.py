@@ -10,6 +10,12 @@ from __future__ import annotations
 
 MSG_2 = "Cool, what state are you from and what do you do for work?"
 MSG_3 = "Awesome and what made you interested in starting your own courier business?"
+MSG_4 = (
+    "So I get better context in terms of where you're currently at, have you set aside funds to invest "
+    "in to being a courier business owner?"
+)
+# Earlier Msg 4 versions, no longer offered as buttons. Kept so a conversation where one of them
+# already went out is still recognized as being at Msg 4.
 MSG_4_POSITIVE = (
     "Love that. Are you looking for coaching and mentorship to help you get started, "
     "or are you planning to figure things out on your own?"
@@ -44,10 +50,7 @@ PATH_C = (
 STEPS: dict[str, list[tuple[str, str, str]]] = {
     "opener": [("Msg 2", "msg2", MSG_2)],
     "msg2": [("Msg 3", "msg3", MSG_3)],
-    "msg3": [
-        ("Msg 4 (positive)", "msg4", MSG_4_POSITIVE),
-        ("Msg 4 (empathetic)", "msg4", MSG_4_EMPATHETIC),
-    ],
+    "msg3": [("Msg 4", "msg4", MSG_4)],
     "msg4": [
         ("Path A: Coaching", "done", PATH_A),
         ("Path B: Self-paced", "done", PATH_B),
@@ -69,6 +72,7 @@ def _norm(text: str) -> str:
 _TEXT_TO_STEP = {
     _norm(MSG_2): "msg2",
     _norm(MSG_3): "msg3",
+    _norm(MSG_4): "msg4",
     _norm(MSG_4_POSITIVE): "msg4",
     _norm(MSG_4_EMPATHETIC): "msg4",
     _norm(PATH_A): "done",

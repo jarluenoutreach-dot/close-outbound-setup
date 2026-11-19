@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from outbound.db import Db
 from outbound.engine import Engine
+from outbound.followup import MSG_4, PATH_A, PATH_C
 from outbound.messages import VERSIONS
 
 from .fakes import ME, OTHER, Clock, FakeClose, FakeTelegram, make_settings
@@ -473,38 +474,39 @@ def test_a_used_or_unknown_button_token_is_rejected_not_resent(tmp_path):
 def test_a_different_button_in_the_same_notification_can_correct_a_wrong_tap(tmp_path):
     engine, close, tg, clock = setup(tmp_path)
     lead_id = _send_first_text(engine, close)
-    # Walk the lead to the msg3 step, which offers two options (positive/empathetic).
+    # Walk the lead to the msg4 step, which offers three paths.
     close.add_activity("sms", lead_id, id="acti_1", direction="inbound", text="yes", date_created=clock.now.isoformat())
     run(engine.reply_tick())
-    first_buttons = tg.sent_with_buttons[0][1]
-    run(engine.handle_followup_button(first_buttons[0][1]))  # tap "Msg 2"
+    run(engine.handle_followup_button(tg.sent_with_buttons[0][1][0][1]))  # tap "Msg 2"
     clock.advance(minutes=1)
-    close.add_activity("sms", lead_id, id="acti_2", direction="inbound", text="because freedom", date_created=clock.now.isoformat())
+    close.add_activity("sms", lead_id, id="acti_2", direction="inbound", text="Texas, driver", date_created=clock.now.isoformat())
     run(engine.reply_tick())
-    second_buttons = tg.sent_with_buttons[1][1]
-    run(engine.handle_followup_button(second_buttons[0][1]))  # tap "Msg 3"
+    run(engine.handle_followup_button(tg.sent_with_buttons[1][1][0][1]))  # tap "Msg 3"
     clock.advance(minutes=1)
-    close.add_activity("sms", lead_id, id="acti_3", direction="inbound", text="I got laid off", date_created=clock.now.isoformat())
+    close.add_activity("sms", lead_id, id="acti_3", direction="inbound", text="because freedom", date_created=clock.now.isoformat())
     run(engine.reply_tick())
-    buttons = tg.sent_with_buttons[2][1]
+    msg4_buttons = tg.sent_with_buttons[2][1]
+    assert [label for label, _ in msg4_buttons][:1] == ["Msg 4"]
+    assert "Msg 4 (positive)" not in [label for label, _ in msg4_buttons]
+    run(engine.handle_followup_button(msg4_buttons[0][1]))  # tap "Msg 4"
+    assert close.created_sms[-1]["text"] == MSG_4
+    clock.advance(minutes=1)
+    close.add_activity("sms", lead_id, id="acti_4", direction="inbound", text="not really", date_created=clock.now.isoformat())
+    run(engine.reply_tick())
+    buttons = tg.sent_with_buttons[3][1]
     labels = [label for label, _ in buttons]
-    assert labels[:2] == ["Msg 4 (positive)", "Msg 4 (empathetic)"]
-    wrong_token = buttons[0][1]  # tapped "positive" by mistake
-    right_token = buttons[1][1]  # meant "empathetic"
+    assert labels[:3] == ["Path A: Coaching", "Path B: Self-paced", "Path C: Not ready"]
+    wrong_token = buttons[0][1]  # tapped Path A by mistake
+    right_token = buttons[2][1]  # meant Path C
 
     first = run(engine.handle_followup_button(wrong_token))
-    assert "Love that" in first
+    assert "quick 5-10 min call" in first
     second = run(engine.handle_followup_button(right_token))  # correct the mistake
 
-    assert "sorry to hear" in second
+    assert "free resources" in second
     assert "can't be unsent" in second
-    assert engine.db.get(lead_id)["followup_step"] == "msg4"
-    assert [s["text"] for s in close.created_sms[-2:]] == [
-        "Love that. Are you looking for coaching and mentorship to help you get started, "
-        "or are you planning to figure things out on your own?",
-        "I'm sorry to hear that. Are you looking for coaching and mentorship to help you get started, "
-        "or are you planning to figure things out on your own?",
-    ]
+    assert engine.db.get(lead_id)["followup_step"] == "done"
+    assert [s["text"] for s in close.created_sms[-2:]] == [PATH_A, PATH_C]
 
 
 def test_write_my_own_then_say_sends_the_humans_exact_text(tmp_path):
@@ -545,7 +547,7 @@ def test_followup_step_catches_up_when_a_human_texts_the_script_directly(tmp_pat
     assert engine.db.get(lead_id)["followup_step"] == "msg3"
     _, buttons = tg.sent_with_buttons[0]
     labels = [label for label, _ in buttons]
-    assert labels[:2] == ["Msg 4 (positive)", "Msg 4 (empathetic)"]  # msg3 step's options, not Msg 2
+    assert labels[:1] == ["Msg 4"]  # msg3 step's options, not Msg 2
 
 
 def test_dismiss_button_marks_handled_and_clears_from_pending(tmp_path):
