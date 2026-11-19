@@ -12,7 +12,7 @@ MSG_2 = "Cool, what state are you from and what do you do for work?"
 MSG_3 = "Awesome and what made you interested in starting your own courier business?"
 MSG_4 = (
     "So I get better context in terms of where you're currently at, have you set aside funds to invest "
-    "in to being a courier business owner?"
+    "into being a courier business owner?"
 )
 # Earlier Msg 4 versions, no longer offered as buttons. Kept so a conversation where one of them
 # already went out is still recognized as being at Msg 4.
