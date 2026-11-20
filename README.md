@@ -88,16 +88,16 @@ Watches **Jarluen – TC Completed Nurture (SMS)**: leads you texted and had you
 
 | Day | Text |
 |---|---|
-| 0 (as soon as the lead enters the view) | Intro: "Hey {name}, it's Jarluen from Daeron's team…" |
+| 0 (as soon as the lead enters the view) | Intro: "Hey {name}, it's Jarluen from Daeron's team…" (offers help with questions, no booking times) |
 | 1 | Nudge: "…just making sure you saw my text yesterday…" (only if they haven't replied) |
 | 2 | FedEx driver to $10k/month video |
 | 4 | "What's the #1 thing holding you back…" |
 | 6 | Diamond Program breakdown |
 | 8 | Daeron's $65k video |
-| 11 | "Want me to check what's open on the calendar…" |
+| 11 | "Is there anything about the courier business you'd like me to explain?" |
 | 15 | "Should I close out your file…" |
 
-**Waits while a call is booked:** a lead with an upcoming meeting isn't started (and a running nurture stops), so nobody gets "want a few times?" with a call already on the calendar.
+**Waits while a call is booked:** a lead with an upcoming meeting isn't started (and a running nurture stops), so nobody gets a follow-up text while a call is already on the calendar. The nurture never offers booking times.
 
 **Stops when:** the lead texts back, calls in, gets a meeting booked, the lead status changes, an opportunity moves to SS Booked, or the lead leaves the smart view. Before every text the service also re-checks that you still own a TC Completed / TC Booked / SS Completed opportunity on the lead.
 
