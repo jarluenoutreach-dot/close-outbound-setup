@@ -332,7 +332,7 @@ def test_disabled_sequences_do_nothing(tmp_path):
 
 def test_no_name_renders_cleanly():
     assert render("intro", None).startswith("Hey, it's Jarluen")
-    assert render("calendar", None).startswith("Want me to check")
+    assert render("calendar", None).startswith("Is there anything about the courier business")
     assert "{name}" not in "".join(render(k, None) for k in ("question", "slides", "slides_check", "breakup"))
 
 

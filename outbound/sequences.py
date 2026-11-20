@@ -33,16 +33,16 @@ SLIDES_URL = "https://gamma.app/docs/Diamond-Program-qm9r81lcp22mjbd?mode=doc"
 # ---- Messages: (with first name, without first name) ---------------------------
 MESSAGES: dict[str, tuple[str, str]] = {
     "intro": (
-        "Hey {name}, it's Jarluen from Daeron's team. Great connecting! Next step is a quick Strategy "
-        "Session to map out your courier plan. Want a few times?",
-        "Hey, it's Jarluen from Daeron's team. Great connecting! Next step is a quick Strategy Session "
-        "to map out your courier plan. Want a few times?",
+        "Hey {name}, it's Jarluen from Daeron's team. Great connecting! Happy to answer any questions you "
+        "have about starting a courier business.",
+        "Hey, it's Jarluen from Daeron's team. Great connecting! Happy to answer any questions you have "
+        "about starting a courier business.",
     ),
     "nudge": (
-        "Hey {name}, just making sure you saw my text yesterday. Want me to send over a few times for your "
-        "Strategy Session?",
-        "Hey, just making sure you saw my text yesterday. Want me to send over a few times for your "
-        "Strategy Session?",
+        "Hey {name}, just making sure you saw my text yesterday. Any questions I can answer about the "
+        "courier business?",
+        "Hey, just making sure you saw my text yesterday. Any questions I can answer about the courier "
+        "business?",
     ),
     "fedex": (
         "One of our students went from FedEx driver to $10k/month. Here's how: https://youtu.be/MhFYz5KjOBQ "
@@ -63,10 +63,10 @@ MESSAGES: dict[str, tuple[str, str]] = {
         "car: https://www.youtube.com/watch?v=wHtJPqYmBdU",
     ) * 2,
     "calendar": (
-        "{name}, want me to check what's open on the calendar this week for your Strategy Session? Takes "
-        "2 minutes to lock in.",
-        "Want me to check what's open on the calendar this week for your Strategy Session? Takes 2 "
-        "minutes to lock in.",
+        "{name}, is there anything about the courier business you'd like me to explain? I can send the "
+        "free resources again if that helps.",
+        "Is there anything about the courier business you'd like me to explain? I can send the free "
+        "resources again if that helps.",
     ),
     "breakup": (
         "Hey {name}, I don't want to keep bugging you. Should I close out your file for now, or are you "
